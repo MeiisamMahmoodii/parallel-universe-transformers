@@ -7,7 +7,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
-from typing import Optional
+from typing import Optional, Dict, Any
 import json
 
 from model.model import ParallelUniverseTransformer
@@ -92,6 +92,8 @@ class Trainer:
         
         # EMA loss for smoother progress bar display
         self._ema_loss = None
+        # Last eval metrics (shown on bar until next eval)
+        self._last_eval_metrics: Optional[dict] = None
         
         # Checkpointing (only rank 0 creates dir and saves)
         if self.rank == 0:
@@ -177,37 +179,57 @@ class Trainer:
         
         return {k: v.item() for k, v in losses.items()}
     
-    def train_epoch(self, dataloader: DataLoader, progress_bar: Optional[tqdm] = None) -> dict:
-        """Train for one epoch.
-        
-        Args:
-            dataloader: Training data loader.
-            progress_bar: Optional global tqdm bar (steps 0..max_steps). If given, updated each optimizer step.
-            
-        Returns:
-            Dictionary of average losses.
-        """
+    def _progress_postfix(self) -> Dict[str, Any]:
+        """Build postfix dict for progress bar: train losses + last eval metrics."""
+        postfix = dict(self._ema_loss) if self._ema_loss else {}
+        if self._last_eval_metrics:
+            for k, v in self._last_eval_metrics.items():
+                if v is not None and isinstance(v, (int, float)) and v == v:  # finite
+                    postfix[k] = round(float(v), 4)
+        return postfix
+
+    def train_epoch(self, dataloader: DataLoader) -> dict:
+        """Train for one epoch with per-epoch progress bar (0-100%), live metrics, and eval display."""
         self.model.train()
         total_losses = {}
         num_batches = 0
         num_batches_since_log = 0
-        
-        for batch_idx, batch in enumerate(dataloader):
+
+        try:
+            total_batches = len(dataloader)
+        except TypeError:
+            total_batches = None
+
+        progress_bar = tqdm(
+            dataloader,
+            total=total_batches,
+            desc=f"Epoch {self.current_epoch}",
+            disable=(self.rank != 0),
+            position=0,
+            leave=False,
+            unit="batch",
+            dynamic_ncols=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+        )
+
+        for batch_idx, batch in enumerate(progress_bar):
             # Training step
             losses = self.train_step(batch)
-            
+
             # Update EMA for smoother display
             if self._ema_loss is None:
                 self._ema_loss = dict(losses)
             else:
                 for k in losses:
                     self._ema_loss[k] = 0.95 * self._ema_loss[k] + 0.05 * losses[k]
-            
+
+            progress_bar.set_postfix(self._progress_postfix())
+
             # Accumulate losses
             for k, v in losses.items():
                 total_losses[k] = total_losses.get(k, 0) + v
             num_batches_since_log += 1
-            
+
             # Gradient accumulation
             if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                 # Gradient clipping (params: unwrap DDP for single model)
@@ -226,30 +248,20 @@ class Trainer:
                         self.config.max_grad_norm
                     )
                     self.optimizer.step()
-                
+
                 # Learning rate scheduling
                 if self.global_step < self.config.warmup_steps:
                     self.warmup_scheduler.step()
                 else:
                     self.scheduler.step()
-                
+
                 self.optimizer.zero_grad()
                 self.global_step += 1
-                
-                # Global progress bar (one bar for entire training: 0 .. max_steps)
-                if progress_bar is not None:
-                    progress_bar.n = self.global_step
-                    progress_bar.set_description(f"Epoch {self.current_epoch}")
-                    progress_bar.set_postfix(self._ema_loss)
-                    progress_bar.refresh()
-                
+
                 # Logging
                 if self.global_step % self.config.log_every == 0:
-                    # Correct average: divide by actual number of batches since last log
                     n = max(num_batches_since_log, 1)
                     avg_losses = {k: v / n for k, v in total_losses.items()}
-                    # Progress bar already updated above; wandb logs true average
-                    
                     if self.use_wandb:
                         self.wandb.log({
                             f"train/{k}": v for k, v in avg_losses.items()
@@ -257,32 +269,37 @@ class Trainer:
                         self.wandb.log({
                             "train/lr": self.optimizer.param_groups[0]['lr']
                         }, step=self.global_step)
-                    
                     total_losses = {}
                     num_batches_since_log = 0
-                
-                # Evaluation
+
+                # Evaluation: compute metrics, print results, store for bar
                 if self.global_step % self.config.eval_every == 0:
                     metrics = self.metrics_computer.compute_and_reset()
+                    self._last_eval_metrics = {
+                        "eval_delta_mae": metrics.get("delta_mae"),
+                        "eval_baseline_mae": metrics.get("baseline_mae"),
+                        "eval_delta_corr": metrics.get("delta_correlation"),
+                    }
                     if self.rank == 0:
-                        print(f"\nStep {self.global_step} Metrics:")
+                        print(f"\n--- Evaluation @ step {self.global_step} ---")
                         print(format_metrics(metrics))
-                    
+                        print("---\n")
+                    progress_bar.set_postfix(self._progress_postfix())
                     if self.use_wandb:
                         self.wandb.log({
                             f"train/{k}": v for k, v in metrics.items()
                         }, step=self.global_step)
-                
+
                 # Checkpointing
                 if self.global_step % self.config.save_every == 0:
                     self.save_checkpoint(f"checkpoint_step_{self.global_step}.pt")
-                
+
                 # Check if max steps reached
                 if self.global_step >= self.config.max_steps:
                     break
-            
+
             num_batches += 1
-        
+
         # Average losses
         avg_losses = {k: v / num_batches for k, v in total_losses.items()}
         return avg_losses
@@ -290,31 +307,18 @@ class Trainer:
     def train(self):
         """Full training loop with curriculum."""
         curriculum_stages = CurriculumConfig.get_default_curriculum()
-        
-        # One progress bar for entire training (0 .. max_steps), reused across epochs
-        progress_bar = None
-        if self.rank == 0:
-            progress_bar = tqdm(
-                total=self.config.max_steps,
-                initial=self.global_step,
-                desc=f"Epoch {self.current_epoch}",
-                position=0,
-                leave=True,
-                unit="step",
-                dynamic_ncols=True,
-            )
-        
+
         for stage in curriculum_stages:
             if self.global_step >= self.config.max_steps:
                 break
-            
+
             if self.rank == 0:
                 print(f"\n{'='*60}")
                 print(f"Starting curriculum stage: {stage.name}")
                 print(f"Features: {stage.n_features}, Interventions: {stage.n_interventions}")
                 print(f"Complexity: {stage.complexity}")
                 print(f"{'='*60}\n")
-            
+
             # Create dataloader for this stage (sharded by rank when DDP)
             dataloader = create_dataloader(
                 stage,
@@ -324,19 +328,15 @@ class Trainer:
                 rank=self.rank,
                 world_size=self.world_size
             )
-            
+
             # Train for this stage
             stage_start_step = self.global_step
             while self.global_step < stage_start_step + stage.min_steps:
                 if self.global_step >= self.config.max_steps:
                     break
-                
-                self.train_epoch(dataloader, progress_bar=progress_bar)
+                self.train_epoch(dataloader)
                 self.current_epoch += 1
-        
-        if progress_bar is not None:
-            progress_bar.close()
-        
+
         # Final checkpoint
         self.save_checkpoint("final_model.pt")
         if self.rank == 0:
