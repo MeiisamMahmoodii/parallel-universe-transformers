@@ -49,7 +49,8 @@ def main():
     parser.add_argument('--max-steps', type=int, default=100000, help='Maximum training steps')
     
     # Loss
-    parser.add_argument('--lambda-delta', type=float, default=1.0, help='Delta loss weight')
+    parser.add_argument('--lambda-delta', type=float, default=2.0, help='Delta loss weight (recommended 2-10 if delta plateaus; higher = more focus on effect estimation)')
+    parser.add_argument('--lambda-delta-warmup-steps', type=int, default=0, help='Ramp lambda_delta from 0 to --lambda-delta over this many steps (0 = no warmup)')
     
     # Optimization
     parser.add_argument('--mixed-precision', action='store_true', help='Use mixed precision')
@@ -105,6 +106,7 @@ def main():
         warmup_steps=args.warmup_steps,
         max_steps=args.max_steps,
         lambda_delta=args.lambda_delta,
+        lambda_delta_warmup_steps=args.lambda_delta_warmup_steps,
         use_mixed_precision=args.mixed_precision,
         use_gradient_checkpointing=args.gradient_checkpointing,
         log_every=args.log_every,

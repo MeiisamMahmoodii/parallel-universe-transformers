@@ -29,7 +29,8 @@ class TrainingConfig:
     save_every: int = 5000
     
     # Loss
-    lambda_delta: float = 1.0
+    lambda_delta: float = 2.0
+    lambda_delta_warmup_steps: int = 0  # 0 = no warmup; else ramp 0 -> lambda_delta over this many steps
     use_quantiles: bool = False
     
     # Optimization

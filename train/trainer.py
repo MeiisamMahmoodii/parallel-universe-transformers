@@ -164,6 +164,13 @@ class Trainer:
         loss_mask = (torch.arange(max_Nq, device=self.device) < query_lengths.unsqueeze(1)).float()  # [B, max_Nq]
         loss_mask = loss_mask.unsqueeze(1).expand(B, W, max_Nq)  # [B, W, max_Nq]
         
+        # Effective lambda_delta (warmup: ramp from 0 to config.lambda_delta over warmup steps)
+        effective_lambda_delta = None
+        warmup_steps = getattr(self.config, "lambda_delta_warmup_steps", 0)
+        if warmup_steps > 0:
+            ratio = min(1.0, self.global_step / warmup_steps)
+            effective_lambda_delta = ratio * self.config.lambda_delta
+
         # Forward pass
         if self.scaler is not None:
             with _autocast():
@@ -172,7 +179,10 @@ class Trainer:
                     feature_types, cardinalities,
                     support_mask, query_mask
                 )
-                losses = self.loss_computer.compute_loss(outputs, query_y, loss_mask=loss_mask)
+                losses = self.loss_computer.compute_loss(
+                    outputs, query_y, loss_mask=loss_mask,
+                    lambda_delta_override=effective_lambda_delta,
+                )
                 loss = losses['total'] / self.config.gradient_accumulation_steps
         else:
             outputs = self.model(
@@ -180,7 +190,10 @@ class Trainer:
                 feature_types, cardinalities,
                 support_mask, query_mask
             )
-            losses = self.loss_computer.compute_loss(outputs, query_y, loss_mask=loss_mask)
+            losses = self.loss_computer.compute_loss(
+                outputs, query_y, loss_mask=loss_mask,
+                lambda_delta_override=effective_lambda_delta,
+            )
             loss = losses['total'] / self.config.gradient_accumulation_steps
         
         # Backward pass
