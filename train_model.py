@@ -74,7 +74,22 @@ def main():
     
     # Distributed setup (no-op if not launched with torchrun)
     rank, local_rank, world_size = setup_distributed()
-    device = f"cuda:{local_rank}" if world_size > 1 else (args.device if torch.cuda.is_available() else "cpu")
+    if world_size > 1:
+        device_count = torch.cuda.device_count()
+        # Map local_rank to a valid CUDA device (handles nodes with fewer GPUs than processes)
+        cuda_idx = local_rank % max(device_count, 1)
+        device = f"cuda:{cuda_idx}"
+        if rank == 0 and device_count < world_size:
+            import warnings
+            warnings.warn(
+                f"DDP: world_size={world_size} but only {device_count} GPU(s) visible. "
+                f"Processes will share GPU(s). For one process per GPU, use: "
+                f"torchrun --nproc_per_node={device_count} train_model.py ...",
+                UserWarning,
+                stacklevel=2,
+            )
+    else:
+        device = args.device if torch.cuda.is_available() else "cpu"
     
     # Create config (with DDP rank/world_size so dataloader and trainer shard correctly)
     config = TrainingConfig(
@@ -128,7 +143,8 @@ def main():
     )
     model = model.to(device)
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank])
+        cuda_idx = local_rank % max(torch.cuda.device_count(), 1)
+        model = DDP(model, device_ids=[cuda_idx])
     
     # Create trainer (with DDP-wrapped model when multi-GPU)
     trainer = Trainer(config, model=model)
