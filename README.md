@@ -119,9 +119,16 @@ parallel-universe-transformers/
 
 ## Training
 
+**Single-GPU:**
 ```bash
-python -m train.trainer --config configs/default.yaml
+uv run python train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
 ```
+
+**Multi-GPU (DistributedDataParallel):** Use `torchrun` with `--nproc_per_node` equal to the number of GPUs. Each process uses one GPU; data is sharded across ranks. Checkpoints and logging are on rank 0 only.
+```bash
+torchrun --nproc_per_node=2 train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
+```
+Single-GPU is the same script with one process: `torchrun --nproc_per_node=1 train_model.py ...`
 
 ## Evaluation
 

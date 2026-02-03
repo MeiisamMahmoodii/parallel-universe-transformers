@@ -20,7 +20,9 @@ class SCMEpisodeDataset(IterableDataset):
         self,
         curriculum_stage: CurriculumStage,
         seed: Optional[int] = None,
-        episodes_per_epoch: int = 10000
+        episodes_per_epoch: int = 10000,
+        rank: int = 0,
+        world_size: int = 1
     ):
         """Initialize dataset.
         
@@ -28,10 +30,14 @@ class SCMEpisodeDataset(IterableDataset):
             curriculum_stage: Configuration for this curriculum stage.
             seed: Random seed.
             episodes_per_epoch: Number of episodes per epoch (for iteration).
+            rank: Distributed rank (for DDP sharding).
+            world_size: Number of distributed processes (for DDP sharding).
         """
         super().__init__()
         self.stage = curriculum_stage
         self.episodes_per_epoch = episodes_per_epoch
+        self.rank = rank
+        self.world_size = world_size
         
         # Initialize RNG
         self.base_seed = seed if seed is not None else np.random.randint(0, 2**31)
@@ -129,19 +135,26 @@ class SCMEpisodeDataset(IterableDataset):
         return episode
     
     def __iter__(self) -> Iterator[Episode]:
-        """Iterate over episodes."""
-        worker_info = torch.utils.data.get_worker_info()
-        
-        if worker_info is None:
-            # Single-process
-            start_idx = 0
-            end_idx = self.episodes_per_epoch
+        """Iterate over episodes. Shards by rank (DDP) then by worker (DataLoader)."""
+        # DDP sharding: each rank gets a contiguous slice of episodes
+        if self.world_size > 1:
+            per_rank = self.episodes_per_epoch // self.world_size
+            rank_start = self.rank * per_rank
+            rank_end = (self.rank + 1) * per_rank if self.rank < self.world_size - 1 else self.episodes_per_epoch
         else:
-            # Multi-process: split episodes among workers
-            per_worker = self.episodes_per_epoch // worker_info.num_workers
+            rank_start = 0
+            rank_end = self.episodes_per_epoch
+        
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            start_idx = rank_start
+            end_idx = rank_end
+        else:
+            total_for_rank = rank_end - rank_start
+            per_worker = total_for_rank // worker_info.num_workers
             worker_id = worker_info.id
-            start_idx = worker_id * per_worker
-            end_idx = start_idx + per_worker
+            start_idx = rank_start + worker_id * per_worker
+            end_idx = rank_start + (worker_id + 1) * per_worker if worker_id < worker_info.num_workers - 1 else rank_end
         
         for episode_idx in range(start_idx, end_idx):
             yield self._generate_episode(episode_idx)
@@ -155,20 +168,29 @@ def create_dataloader(
     curriculum_stage: CurriculumStage,
     batch_size: int = 32,
     num_workers: int = 4,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
+    rank: int = 0,
+    world_size: int = 1
 ) -> torch.utils.data.DataLoader:
     """Create a DataLoader for SCM episodes.
     
     Args:
         curriculum_stage: Curriculum configuration.
-        batch_size: Batch size.
+        batch_size: Batch size (per GPU when using DDP).
         num_workers: Number of worker processes.
         seed: Random seed.
+        rank: Distributed rank (for DDP; each rank gets a shard of episodes).
+        world_size: Number of distributed processes.
         
     Returns:
         DataLoader instance.
     """
-    dataset = SCMEpisodeDataset(curriculum_stage, seed=seed)
+    dataset = SCMEpisodeDataset(
+        curriculum_stage,
+        seed=seed,
+        rank=rank,
+        world_size=world_size
+    )
     packer = EpisodePacker()
     
     return torch.utils.data.DataLoader(

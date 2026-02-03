@@ -1,9 +1,32 @@
-"""Main training script."""
+"""Main training script. Supports single-GPU and multi-GPU via DistributedDataParallel.
+
+Single-GPU:
+  python train_model.py [args...]
+
+Multi-GPU (e.g. 2 GPUs):
+  torchrun --nproc_per_node=2 train_model.py [args...]
+"""
 
 import argparse
+import os
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 from train.config import TrainingConfig
 from train.trainer import Trainer
+from model.model import ParallelUniverseTransformer
+
+
+def setup_distributed():
+    """Initialize process group if RANK is set (e.g. by torchrun). Returns (rank, local_rank, world_size)."""
+    if "RANK" not in os.environ:
+        return 0, 0, 1
+    rank = int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    dist.init_process_group(backend="nccl")
+    return rank, local_rank, world_size
 
 
 def main():
@@ -44,12 +67,16 @@ def main():
     parser.add_argument('--resume-from', type=str, default=None, help='Resume from checkpoint')
     
     # Device
-    parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
+    parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu); overridden by DDP to cuda:LOCAL_RANK')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of data loader workers')
     
     args = parser.parse_args()
     
-    # Create config
+    # Distributed setup (no-op if not launched with torchrun)
+    rank, local_rank, world_size = setup_distributed()
+    device = f"cuda:{local_rank}" if world_size > 1 else (args.device if torch.cuda.is_available() else "cpu")
+    
+    # Create config (with DDP rank/world_size so dataloader and trainer shard correctly)
     config = TrainingConfig(
         d_model=args.d_model,
         n_layers=args.n_layers,
@@ -73,24 +100,48 @@ def main():
         wandb_run_name=args.wandb_run_name,
         checkpoint_dir=args.checkpoint_dir,
         resume_from=args.resume_from,
-        device=args.device,
-        num_workers=args.num_workers
+        device=device,
+        num_workers=args.num_workers,
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
     )
     
-    print("Configuration:")
-    print(f"  Model: d_model={config.d_model}, n_layers={config.n_layers}, n_heads={config.n_heads}")
-    print(f"  Training: batch_size={config.effective_batch_size}, lr={config.learning_rate}")
-    print(f"  Device: {config.device}")
-    print(f"  Max steps: {config.max_steps}")
+    if rank == 0:
+        print("Configuration:")
+        print(f"  Model: d_model={config.d_model}, n_layers={config.n_layers}, n_heads={config.n_heads}")
+        print(f"  Training: effective_batch_size={config.effective_batch_size}, lr={config.learning_rate}")
+        print(f"  Device: {config.device} (world_size={world_size})")
+        print(f"  Max steps: {config.max_steps}")
     
-    # Create trainer
-    trainer = Trainer(config)
+    # Create model and optionally wrap in DDP
+    model = ParallelUniverseTransformer(
+        d_model=config.d_model,
+        n_layers=config.n_layers,
+        n_heads=config.n_heads,
+        d_ff=config.d_ff,
+        dropout=config.dropout,
+        cross_world_layers=config.cross_world_layers,
+        attend_to_all_worlds=config.attend_to_all_worlds,
+        use_gradient_checkpointing=config.use_gradient_checkpointing,
+        use_quantiles=config.use_quantiles,
+    )
+    model = model.to(device)
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank])
+    
+    # Create trainer (with DDP-wrapped model when multi-GPU)
+    trainer = Trainer(config, model=model)
     
     # Train
-    print("\nStarting training...")
+    if rank == 0:
+        print("\nStarting training...")
     trainer.train()
     
-    print("\nTraining completed!")
+    if rank == 0:
+        print("\nTraining completed!")
+    if world_size > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':

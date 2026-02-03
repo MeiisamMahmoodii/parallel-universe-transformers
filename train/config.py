@@ -56,11 +56,21 @@ class TrainingConfig:
     # Device
     device: str = "cuda"
     
+    # DistributedDataParallel
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+    
     def __post_init__(self):
         if self.cross_world_layers is None:
             self.cross_world_layers = [3, 5]
     
     @property
     def effective_batch_size(self) -> int:
-        """Effective batch size with gradient accumulation."""
-        return self.batch_size * self.gradient_accumulation_steps
+        """Effective batch size with gradient accumulation (and world_size when DDP)."""
+        return self.batch_size * self.gradient_accumulation_steps * self.world_size
+    
+    @property
+    def is_distributed(self) -> bool:
+        """True when using DistributedDataParallel (world_size > 1)."""
+        return self.world_size > 1

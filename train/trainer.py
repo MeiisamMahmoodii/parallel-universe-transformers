@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 from typing import Optional
 import json
@@ -33,8 +34,11 @@ class Trainer:
         """
         self.config = config
         self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+        self.rank = getattr(config, "rank", 0)
+        self.world_size = getattr(config, "world_size", 1)
+        self._is_ddp = self.world_size > 1
         
-        # Create model
+        # Create model (or use provided DDP-wrapped model)
         if model is None:
             model = ParallelUniverseTransformer(
                 d_model=config.d_model,
@@ -89,15 +93,16 @@ class Trainer:
         # EMA loss for smoother progress bar display
         self._ema_loss = None
         
-        # Checkpointing
-        os.makedirs(config.checkpoint_dir, exist_ok=True)
+        # Checkpointing (only rank 0 creates dir and saves)
+        if self.rank == 0:
+            os.makedirs(config.checkpoint_dir, exist_ok=True)
         
         # Resume from checkpoint
         if config.resume_from:
             self.load_checkpoint(config.resume_from)
         
-        # Wandb
-        self.use_wandb = config.use_wandb
+        # Wandb (only rank 0)
+        self.use_wandb = config.use_wandb and (self.rank == 0)
         if self.use_wandb:
             try:
                 import wandb
@@ -186,7 +191,11 @@ class Trainer:
         num_batches = 0
         num_batches_since_log = 0
         
-        progress_bar = tqdm(dataloader, desc=f"Epoch {self.current_epoch}")
+        progress_bar = tqdm(
+            dataloader,
+            desc=f"Epoch {self.current_epoch}",
+            disable=(self.rank != 0)
+        )
         
         for batch_idx, batch in enumerate(progress_bar):
             # Training step
@@ -206,18 +215,19 @@ class Trainer:
             
             # Gradient accumulation
             if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
-                # Gradient clipping
+                # Gradient clipping (params: unwrap DDP for single model)
+                model_for_grad = self.model.module if self._is_ddp else self.model
                 if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
+                        model_for_grad.parameters(),
                         self.config.max_grad_norm
                     )
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
                     torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
+                        model_for_grad.parameters(),
                         self.config.max_grad_norm
                     )
                     self.optimizer.step()
@@ -253,8 +263,9 @@ class Trainer:
                 # Evaluation
                 if self.global_step % self.config.eval_every == 0:
                     metrics = self.metrics_computer.compute_and_reset()
-                    print(f"\nStep {self.global_step} Metrics:")
-                    print(format_metrics(metrics))
+                    if self.rank == 0:
+                        print(f"\nStep {self.global_step} Metrics:")
+                        print(format_metrics(metrics))
                     
                     if self.use_wandb:
                         self.wandb.log({
@@ -283,18 +294,21 @@ class Trainer:
             if self.global_step >= self.config.max_steps:
                 break
             
-            print(f"\n{'='*60}")
-            print(f"Starting curriculum stage: {stage.name}")
-            print(f"Features: {stage.n_features}, Interventions: {stage.n_interventions}")
-            print(f"Complexity: {stage.complexity}")
-            print(f"{'='*60}\n")
+            if self.rank == 0:
+                print(f"\n{'='*60}")
+                print(f"Starting curriculum stage: {stage.name}")
+                print(f"Features: {stage.n_features}, Interventions: {stage.n_interventions}")
+                print(f"Complexity: {stage.complexity}")
+                print(f"{'='*60}\n")
             
-            # Create dataloader for this stage
+            # Create dataloader for this stage (sharded by rank when DDP)
             dataloader = create_dataloader(
                 stage,
                 batch_size=self.config.batch_size,
                 num_workers=self.config.num_workers,
-                seed=self.current_epoch
+                seed=self.current_epoch,
+                rank=self.rank,
+                world_size=self.world_size
             )
             
             # Train for this stage
@@ -308,18 +322,25 @@ class Trainer:
         
         # Final checkpoint
         self.save_checkpoint("final_model.pt")
-        print(f"\nTraining completed! Final step: {self.global_step}")
+        if self.rank == 0:
+            print(f"\nTraining completed! Final step: {self.global_step}")
     
     def save_checkpoint(self, filename: str):
-        """Save checkpoint.
+        """Save checkpoint (only on rank 0 when using DDP).
         
         Args:
             filename: Checkpoint filename.
         """
+        if self.rank != 0:
+            if self._is_ddp:
+                torch.distributed.barrier()
+            return
+        
         checkpoint_path = os.path.join(self.config.checkpoint_dir, filename)
+        model_state = self.model.module.state_dict() if self._is_ddp else self.model.state_dict()
         
         checkpoint = {
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'global_step': self.global_step,
@@ -332,16 +353,19 @@ class Trainer:
         
         torch.save(checkpoint, checkpoint_path)
         print(f"Checkpoint saved: {checkpoint_path}")
+        if self._is_ddp:
+            torch.distributed.barrier()
     
     def load_checkpoint(self, checkpoint_path: str):
-        """Load checkpoint.
+        """Load checkpoint (DDP: load into model.module).
         
         Args:
             checkpoint_path: Path to checkpoint.
         """
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        model_state = checkpoint['model_state_dict']
+        target = self.model.module if self._is_ddp else self.model
+        target.load_state_dict(model_state)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.global_step = checkpoint['global_step']
@@ -350,5 +374,6 @@ class Trainer:
         if self.scaler is not None and 'scaler_state_dict' in checkpoint:
             self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         
-        print(f"Checkpoint loaded: {checkpoint_path}")
-        print(f"Resuming from step {self.global_step}, epoch {self.current_epoch}")
+        if self.rank == 0:
+            print(f"Checkpoint loaded: {checkpoint_path}")
+            print(f"Resuming from step {self.global_step}, epoch {self.current_epoch}")
