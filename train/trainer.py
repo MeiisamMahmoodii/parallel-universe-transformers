@@ -177,11 +177,12 @@ class Trainer:
         
         return {k: v.item() for k, v in losses.items()}
     
-    def train_epoch(self, dataloader: DataLoader) -> dict:
+    def train_epoch(self, dataloader: DataLoader, progress_bar: Optional[tqdm] = None) -> dict:
         """Train for one epoch.
         
         Args:
             dataloader: Training data loader.
+            progress_bar: Optional global tqdm bar (steps 0..max_steps). If given, updated each optimizer step.
             
         Returns:
             Dictionary of average losses.
@@ -191,15 +192,7 @@ class Trainer:
         num_batches = 0
         num_batches_since_log = 0
         
-        progress_bar = tqdm(
-            dataloader,
-            desc=f"Epoch {self.current_epoch}",
-            disable=(self.rank != 0),
-            position=0,
-            leave=False,
-        )
-        
-        for batch_idx, batch in enumerate(progress_bar):
+        for batch_idx, batch in enumerate(dataloader):
             # Training step
             losses = self.train_step(batch)
             
@@ -243,13 +236,19 @@ class Trainer:
                 self.optimizer.zero_grad()
                 self.global_step += 1
                 
+                # Global progress bar (one bar for entire training: 0 .. max_steps)
+                if progress_bar is not None:
+                    progress_bar.n = self.global_step
+                    progress_bar.set_description(f"Epoch {self.current_epoch}")
+                    progress_bar.set_postfix(self._ema_loss)
+                    progress_bar.refresh()
+                
                 # Logging
                 if self.global_step % self.config.log_every == 0:
                     # Correct average: divide by actual number of batches since last log
                     n = max(num_batches_since_log, 1)
                     avg_losses = {k: v / n for k, v in total_losses.items()}
-                    # Progress bar shows EMA for smoother curve; wandb logs true average
-                    progress_bar.set_postfix(self._ema_loss)
+                    # Progress bar already updated above; wandb logs true average
                     
                     if self.use_wandb:
                         self.wandb.log({
@@ -292,6 +291,19 @@ class Trainer:
         """Full training loop with curriculum."""
         curriculum_stages = CurriculumConfig.get_default_curriculum()
         
+        # One progress bar for entire training (0 .. max_steps), reused across epochs
+        progress_bar = None
+        if self.rank == 0:
+            progress_bar = tqdm(
+                total=self.config.max_steps,
+                initial=self.global_step,
+                desc=f"Epoch {self.current_epoch}",
+                position=0,
+                leave=True,
+                unit="step",
+                dynamic_ncols=True,
+            )
+        
         for stage in curriculum_stages:
             if self.global_step >= self.config.max_steps:
                 break
@@ -319,8 +331,11 @@ class Trainer:
                 if self.global_step >= self.config.max_steps:
                     break
                 
-                self.train_epoch(dataloader)
+                self.train_epoch(dataloader, progress_bar=progress_bar)
                 self.current_epoch += 1
+        
+        if progress_bar is not None:
+            progress_bar.close()
         
         # Final checkpoint
         self.save_checkpoint("final_model.pt")
