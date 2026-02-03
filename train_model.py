@@ -9,6 +9,7 @@ Multi-GPU (e.g. 2 GPUs):
 
 import argparse
 import os
+import sys
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -76,18 +77,17 @@ def main():
     rank, local_rank, world_size = setup_distributed()
     if world_size > 1:
         device_count = torch.cuda.device_count()
-        # Map local_rank to a valid CUDA device (handles nodes with fewer GPUs than processes)
-        cuda_idx = local_rank % max(device_count, 1)
-        device = f"cuda:{cuda_idx}"
-        if rank == 0 and device_count < world_size:
-            import warnings
-            warnings.warn(
-                f"DDP: world_size={world_size} but only {device_count} GPU(s) visible. "
-                f"Processes will share GPU(s). For one process per GPU, use: "
-                f"torchrun --nproc_per_node={device_count} train_model.py ...",
-                UserWarning,
-                stacklevel=2,
-            )
+        # DDP requires one GPU per process; NCCL does not allow multiple ranks on the same GPU
+        if device_count < world_size:
+            if rank == 0:
+                print(
+                    f"Error: DDP requires one GPU per process. You have world_size={world_size} "
+                    f"but only {device_count} GPU(s) visible in this process.\n"
+                    f"Use: torchrun --nproc_per_node={device_count} train_model.py ...",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        device = f"cuda:{local_rank}"
     else:
         device = args.device if torch.cuda.is_available() else "cpu"
     
@@ -143,8 +143,7 @@ def main():
     )
     model = model.to(device)
     if world_size > 1:
-        cuda_idx = local_rank % max(torch.cuda.device_count(), 1)
-        model = DDP(model, device_ids=[cuda_idx])
+        model = DDP(model, device_ids=[local_rank])
     
     # Create trainer (with DDP-wrapped model when multi-GPU)
     trainer = Trainer(config, model=model)
