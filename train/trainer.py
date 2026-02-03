@@ -194,7 +194,9 @@ class Trainer:
         progress_bar = tqdm(
             dataloader,
             desc=f"Epoch {self.current_epoch}",
-            disable=(self.rank != 0)
+            disable=(self.rank != 0),
+            position=0,
+            leave=False,
         )
         
         for batch_idx, batch in enumerate(progress_bar):
