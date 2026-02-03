@@ -215,18 +215,23 @@ class Trainer:
         num_batches = 0
         num_batches_since_log = 0
 
+        # Per-rank batch count: with DDP each rank sees 1/world_size of the data
         try:
             total_batches = len(dataloader)
+            if self.world_size > 1:
+                total_batches = max(1, total_batches // self.world_size)
         except TypeError:
             total_batches = None
 
+        # Each epoch on its own line so the previous bar is not overwritten (cycle positions 0..9)
+        position = self.current_epoch % 10 if self.rank == 0 else 0
         progress_bar = tqdm(
             dataloader,
             total=total_batches,
             desc=f"Epoch {self.current_epoch}",
             disable=(self.rank != 0),
-            position=0,
-            leave=False,
+            position=position,
+            leave=True,
             unit="batch",
             dynamic_ncols=True,
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
