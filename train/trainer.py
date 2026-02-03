@@ -1,14 +1,28 @@
 """Main training loop."""
 
 import os
+import warnings
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 from typing import Optional, Dict, Any
 import json
+
+# Prefer new amp API (avoids FutureWarning under PyTorch 2+)
+if hasattr(torch.amp, "autocast") and hasattr(torch.amp, "GradScaler"):
+    def _autocast():
+        return torch.amp.autocast("cuda")
+    def _GradScaler():
+        return torch.amp.GradScaler("cuda")
+else:
+    from torch.cuda.amp import autocast as _autocast_ctx
+    from torch.cuda.amp import GradScaler as _GradScalerCls
+    def _autocast():
+        return _autocast_ctx()
+    def _GradScaler():
+        return _GradScalerCls()
 
 from model.model import ParallelUniverseTransformer
 from episodes.config import CurriculumConfig
@@ -37,6 +51,12 @@ class Trainer:
         self.rank = getattr(config, "rank", 0)
         self.world_size = getattr(config, "world_size", 1)
         self._is_ddp = self.world_size > 1
+        # Only rank 0 prints warnings so progress bar is not broken by DDP ranks
+        if self.rank != 0:
+            warnings.filterwarnings("ignore")
+        else:
+            # Suppress noisy scheduler/amp warnings so progress bar stays readable
+            warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*optimizer.step.*", category=UserWarning)
         
         # Create model (or use provided DDP-wrapped model)
         if model is None:
@@ -77,7 +97,7 @@ class Trainer:
         )
         
         # Mixed precision
-        self.scaler = GradScaler() if config.use_mixed_precision else None
+        self.scaler = _GradScaler() if config.use_mixed_precision else None
         
         # Loss and metrics
         self.loss_computer = LossComputer(
@@ -146,7 +166,7 @@ class Trainer:
         
         # Forward pass
         if self.scaler is not None:
-            with autocast():
+            with _autocast():
                 outputs = self.model(
                     support_x, support_y, query_x,
                     feature_types, cardinalities,
@@ -272,7 +292,7 @@ class Trainer:
                     total_losses = {}
                     num_batches_since_log = 0
 
-                # Evaluation: compute metrics, print results, store for bar
+                # Evaluation: compute metrics, write results above bar (so they stay visible)
                 if self.global_step % self.config.eval_every == 0:
                     metrics = self.metrics_computer.compute_and_reset()
                     self._last_eval_metrics = {
@@ -281,9 +301,12 @@ class Trainer:
                         "eval_delta_corr": metrics.get("delta_correlation"),
                     }
                     if self.rank == 0:
-                        print(f"\n--- Evaluation @ step {self.global_step} ---")
-                        print(format_metrics(metrics))
-                        print("---\n")
+                        msg = (
+                            f"\n--- Evaluation @ step {self.global_step} ---\n"
+                            + format_metrics(metrics)
+                            + "\n---\n"
+                        )
+                        progress_bar.write(msg)
                     progress_bar.set_postfix(self._progress_postfix())
                     if self.use_wandb:
                         self.wandb.log({
