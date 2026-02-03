@@ -1,0 +1,50 @@
+# Default training configuration
+
+# Model architecture
+model:
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  d_ff: 1024
+  dropout: 0.1
+  cross_world_layers: [3, 5]
+  attend_to_all_worlds: true
+  use_gradient_checkpointing: false
+
+# Training
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_steps: 1000
+  max_steps: 100000
+  
+# Loss
+loss:
+  lambda_delta: 1.0
+  use_quantiles: false
+
+# Optimization
+optimization:
+  use_mixed_precision: true
+  max_grad_norm: 1.0
+
+# Data
+data:
+  num_workers: 4
+  pin_memory: true
+
+# Logging
+logging:
+  log_every: 100
+  eval_every: 1000
+  save_every: 5000
+  use_wandb: false
+  wandb_project: "parallel-universe-transformers"
+
+# Checkpointing
+checkpoint_dir: "checkpoints"
+
+# Device
+device: "cuda"
