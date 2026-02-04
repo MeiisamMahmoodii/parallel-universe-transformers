@@ -7,9 +7,25 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
-from tqdm import tqdm
 from typing import Optional, Dict, Any
 import json
+
+# Progress UI (Rich preferred; tqdm fallback)
+try:
+    from rich.console import Console
+    from rich.progress import (
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        BarColumn,
+        MofNCompleteColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
+    _HAS_RICH = True
+except Exception:  # pragma: no cover (fallback)
+    _HAS_RICH = False
+    from tqdm import tqdm
 
 # Prefer new amp API (avoids FutureWarning under PyTorch 2+)
 if hasattr(torch.amp, "autocast") and hasattr(torch.amp, "GradScaler"):
@@ -222,12 +238,48 @@ class Trainer:
                     postfix[k] = round(float(v), 4)
         return postfix
 
+    @staticmethod
+    def _format_postfix(postfix: Dict[str, Any]) -> str:
+        """Compact, stable-order postfix for the terminal."""
+        if not postfix:
+            return ""
+        # Prefer a small, stable set of keys so the line doesn't jump around.
+        key_order = [
+            "total",
+            "pred",
+            "delta",
+            "eval_delta_mae",
+            "eval_baseline_mae",
+            "eval_delta_corr",
+        ]
+        parts = []
+        for k in key_order:
+            if k in postfix:
+                v = postfix[k]
+                if isinstance(v, (int, float)) and v == v:
+                    parts.append(f"{k}={float(v):.3f}")
+        # Add any remaining keys (rare) in sorted order.
+        for k in sorted(postfix.keys()):
+            if k in key_order:
+                continue
+            v = postfix[k]
+            if isinstance(v, (int, float)) and v == v:
+                parts.append(f"{k}={float(v):.3f}")
+        return " ".join(parts)
+
     def train_epoch(self, dataloader: DataLoader) -> dict:
-        """Train for one epoch with per-epoch progress bar (0-100%), live metrics, and eval display."""
+        """Train for one epoch.
+
+        Uses Rich progress (preferred) to avoid overwriting previous epochs in the terminal, and prints
+        a persistent per-epoch summary line for easy comparison. Falls back to tqdm if Rich is absent.
+        """
         self.model.train()
-        total_losses = {}
-        num_batches = 0
-        num_batches_since_log = 0
+        # Rolling window (for log_every)
+        log_losses_sum: Dict[str, float] = {}
+        log_batches = 0
+        # Full-epoch averages (not reset)
+        epoch_losses_sum: Dict[str, float] = {}
+        epoch_batches = 0
 
         # Per-rank batch count: with DDP each rank sees 1/world_size of the data
         try:
@@ -237,22 +289,8 @@ class Trainer:
         except TypeError:
             total_batches = None
 
-        # Single progress line (position=0, leave=False) so output stays clean; eval/checkpoint use write()
-        progress_bar = tqdm(
-            dataloader,
-            total=total_batches,
-            desc=f"Ep {self.current_epoch}",
-            disable=(self.rank != 0),
-            position=0,
-            leave=False,
-            unit="b",
-            ncols=80,
-            dynamic_ncols=False,
-            file=sys.stdout,
-            bar_format="{l_bar}{r_bar} {postfix}",
-        )
-
-        for batch_idx, batch in enumerate(progress_bar):
+        def _step_body(batch_idx: int, batch: dict, log_fn=None):
+            nonlocal log_losses_sum, log_batches, epoch_losses_sum, epoch_batches
             # Training step
             losses = self.train_step(batch)
 
@@ -263,12 +301,12 @@ class Trainer:
                 for k in losses:
                     self._ema_loss[k] = 0.95 * self._ema_loss[k] + 0.05 * losses[k]
 
-            progress_bar.set_postfix(self._progress_postfix())
-
-            # Accumulate losses
+            # Accumulate losses for epoch + log window
             for k, v in losses.items():
-                total_losses[k] = total_losses.get(k, 0) + v
-            num_batches_since_log += 1
+                log_losses_sum[k] = log_losses_sum.get(k, 0.0) + float(v)
+                epoch_losses_sum[k] = epoch_losses_sum.get(k, 0.0) + float(v)
+            log_batches += 1
+            epoch_batches += 1
 
             # Gradient accumulation
             if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
@@ -298,10 +336,10 @@ class Trainer:
                 self.optimizer.zero_grad()
                 self.global_step += 1
 
-                # Logging
+                # Logging (windowed)
                 if self.global_step % self.config.log_every == 0:
-                    n = max(num_batches_since_log, 1)
-                    avg_losses = {k: v / n for k, v in total_losses.items()}
+                    n = max(log_batches, 1)
+                    avg_losses = {k: v / n for k, v in log_losses_sum.items()}
                     if self.use_wandb:
                         self.wandb.log({
                             f"train/{k}": v for k, v in avg_losses.items()
@@ -309,10 +347,10 @@ class Trainer:
                         self.wandb.log({
                             "train/lr": self.optimizer.param_groups[0]['lr']
                         }, step=self.global_step)
-                    total_losses = {}
-                    num_batches_since_log = 0
+                    log_losses_sum = {}
+                    log_batches = 0
 
-                # Evaluation: one-line summary so terminal stays clean
+                # Evaluation: update postfix; avoid noisy multi-line blocks
                 if self.global_step % self.config.eval_every == 0:
                     metrics = self.metrics_computer.compute_and_reset()
                     self._last_eval_metrics = {
@@ -320,34 +358,104 @@ class Trainer:
                         "eval_baseline_mae": metrics.get("baseline_mae"),
                         "eval_delta_corr": metrics.get("delta_correlation"),
                     }
-                    if self.rank == 0:
-                        r2 = metrics.get("baseline_r2") or 0.0
-                        corr = metrics.get("delta_correlation") or 0.0
-                        dmae = metrics.get("delta_mae") or 0.0
-                        ate = metrics.get("ate_mae") or 0.0
-                        progress_bar.write(
-                            f"Eval step {self.global_step}: R²={r2:.3f} Δ_corr={corr:.3f} Δ_MAE={dmae:.3f} ATE_MAE={ate:.4f}"
-                        )
-                    progress_bar.set_postfix(self._progress_postfix())
                     if self.use_wandb:
                         self.wandb.log({
                             f"train/{k}": v for k, v in metrics.items()
                         }, step=self.global_step)
 
-                # Checkpointing (log via progress_bar so it doesn't interleave with bar)
+                # Checkpointing
                 if self.global_step % self.config.save_every == 0:
-                    log_fn = (lambda msg: progress_bar.write(msg)) if self.rank == 0 else None
-                    self.save_checkpoint(f"checkpoint_step_{self.global_step}.pt", log_fn=log_fn)
+                    self.save_checkpoint(
+                        f"checkpoint_step_{self.global_step}.pt",
+                        log_fn=log_fn,
+                    )
 
-                # Check if max steps reached
-                if self.global_step >= self.config.max_steps:
-                    break
+        # Progress UI (rank 0 only)
+        if self.rank == 0 and _HAS_RICH:
+            console = Console()
+            postfix = self._format_postfix(self._progress_postfix())
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold]Ep {task.fields[epoch]}[/bold]"),
+                BarColumn(bar_width=None),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                TextColumn("{task.fields[postfix]}"),
+                console=console,
+                transient=True,  # remove progress bar after epoch ends; keep printed summaries
+                refresh_per_second=10,
+            ) as progress:
+                task_id = progress.add_task(
+                    "",
+                    total=total_batches,
+                    epoch=str(self.current_epoch),
+                    postfix=postfix,
+                )
 
-            num_batches += 1
+                for batch_idx, batch in enumerate(dataloader):
+                    _step_body(batch_idx, batch, log_fn=console.print)
+                    postfix = self._format_postfix(self._progress_postfix())
+                    progress.update(task_id, advance=1, postfix=postfix, epoch=str(self.current_epoch))
+                    if self.global_step >= self.config.max_steps:
+                        break
 
-        # Average losses
-        avg_losses = {k: v / num_batches for k, v in total_losses.items()}
-        return avg_losses
+            # Persistent per-epoch summary line
+            if epoch_batches > 0:
+                epoch_avg = {k: v / epoch_batches for k, v in epoch_losses_sum.items()}
+            else:
+                epoch_avg = {}
+            eval_bits = []
+            if self._last_eval_metrics:
+                dm = self._last_eval_metrics.get("eval_delta_mae")
+                bc = self._last_eval_metrics.get("eval_baseline_mae")
+                dc = self._last_eval_metrics.get("eval_delta_corr")
+                if isinstance(dm, (int, float)) and dm == dm:
+                    eval_bits.append(f"Δ_MAE={dm:.3f}")
+                if isinstance(dc, (int, float)) and dc == dc:
+                    eval_bits.append(f"Δ_corr={dc:.3f}")
+                if isinstance(bc, (int, float)) and bc == bc:
+                    eval_bits.append(f"base_MAE={bc:.3f}")
+            loss_bits = []
+            for k in ("total", "pred", "delta"):
+                if k in epoch_avg:
+                    loss_bits.append(f"{k}={epoch_avg[k]:.3f}")
+            console.print(
+                f"Epoch {self.current_epoch}: "
+                + (" ".join(loss_bits) if loss_bits else "(no losses)")
+                + ((" | " + " ".join(eval_bits)) if eval_bits else "")
+            )
+            return epoch_avg
+
+        # Fallback: tqdm (or non-rank0)
+        progress_bar = tqdm(
+            dataloader,
+            total=total_batches,
+            desc=f"Ep {self.current_epoch}",
+            disable=(self.rank != 0),
+            position=0,
+            leave=False,
+            unit="b",
+            ncols=80,
+            dynamic_ncols=False,
+            file=sys.stdout,
+            bar_format="{l_bar}{r_bar} {postfix}",
+        )
+        for batch_idx, batch in enumerate(progress_bar):
+            _step_body(batch_idx, batch, log_fn=(lambda msg: progress_bar.write(msg)) if self.rank == 0 else None)
+            if self.rank == 0:
+                progress_bar.set_postfix(self._progress_postfix())
+            if self.global_step >= self.config.max_steps:
+                break
+
+        epoch_avg = {k: v / max(epoch_batches, 1) for k, v in epoch_losses_sum.items()}
+        if self.rank == 0:
+            loss_bits = []
+            for k in ("total", "pred", "delta"):
+                if k in epoch_avg:
+                    loss_bits.append(f"{k}={epoch_avg[k]:.3f}")
+            print(f"Epoch {self.current_epoch}: " + (" ".join(loss_bits) if loss_bits else "(no losses)"))
+        return epoch_avg
     
     def train(self):
         """Full training loop with curriculum."""

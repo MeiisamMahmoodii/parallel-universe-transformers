@@ -105,10 +105,14 @@ class CurriculumConfig:
 
     @staticmethod
     def batch_size_for_stage(stage: "CurriculumStage", max_batch_size: int) -> int:
-        """Memory-safe batch size for a curriculum stage to avoid OOM on larger sequences.
+        """Heuristic batch size for a curriculum stage.
 
-        Attention memory scales as B * W * N^2 (batch, worlds, sequence length in tokens).
-        We scale down batch size for stages with larger W or N so peak memory stays bounded.
+        Historically we used a very conservative attention-memory bound (∝ W * N^2) which
+        often forced batch size 1 even when SDPA/FlashAttention was enabled.
+
+        With the PoC curriculum capped to d<=20 and interventions<=8, we can safely use a
+        milder heuristic that scales roughly with W * N (still reducing batch size when
+        worlds/sequence lengths grow), while keeping larger batches for speed.
 
         Args:
             stage: Current curriculum stage.
@@ -124,11 +128,9 @@ class CurriculumConfig:
         ref_w = ref.n_interventions + 1
         cur_n = stage.support_size_range[1] * (stage.n_features + 1) + stage.query_size_range[1] * (stage.n_features + 1)
         cur_w = stage.n_interventions + 1
-        # Keep B * W * N^2 <= ref level => B_stage <= max_batch_size * (ref_w * ref_n^2) / (cur_w * cur_n^2)
-        ratio = (ref_w * (ref_n ** 2)) / (cur_w * (cur_n ** 2))
-        # Apply a safety margin because real batches can hit the max simultaneously in Ns/Nq and trigger spikes.
-        # With SDPA we still cap at 1 for stage_1+ to avoid ~8GB attention spikes on 40GB GPUs.
-        safety_margin = 0.25  # stricter so stage_1 and beyond get batch size 1
-        adjusted_ratio = ratio * safety_margin
-        b = max(1, int(max_batch_size * adjusted_ratio))
+        # Heuristic: keep B * W * N roughly bounded relative to stage_0.
+        # This is intentionally *less* conservative than N^2 (which can be overly pessimistic with SDPA).
+        ratio = (ref_w * ref_n) / (cur_w * cur_n)
+        safety_margin = 0.9
+        b = max(1, int(max_batch_size * ratio * safety_margin))
         return min(b, max_batch_size)
