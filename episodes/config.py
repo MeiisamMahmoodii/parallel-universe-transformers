@@ -127,7 +127,8 @@ class CurriculumConfig:
         # Keep B * W * N^2 <= ref level => B_stage <= max_batch_size * (ref_w * ref_n^2) / (cur_w * cur_n^2)
         ratio = (ref_w * (ref_n ** 2)) / (cur_w * (cur_n ** 2))
         # Apply a safety margin because real batches can hit the max simultaneously in Ns/Nq and trigger spikes.
-        safety_margin = 0.4  # empirically keeps attention allocations < 4GB even in worst-case stage_1 batches
+        # With SDPA we still cap at 1 for stage_1+ to avoid ~8GB attention spikes on 40GB GPUs.
+        safety_margin = 0.25  # stricter so stage_1 and beyond get batch size 1
         adjusted_ratio = ratio * safety_margin
         b = max(1, int(max_batch_size * adjusted_ratio))
         return min(b, max_batch_size)

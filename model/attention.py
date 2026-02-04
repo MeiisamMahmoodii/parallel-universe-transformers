@@ -61,26 +61,34 @@ class MultiHeadAttention(nn.Module):
         K = K.view(B, N, self.n_heads, self.d_head).transpose(1, 2)
         V = V.view(B, N, self.n_heads, self.d_head).transpose(1, 2)
         
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # [B, n_heads, N, N]
-        
+        # Build attn_mask for SDPA: 0 = attend, -inf = mask (our mask: 1 = attend, 0 = mask)
+        attn_mask = None
         if mask is not None:
-            scores = scores.masked_fill(mask.unsqueeze(1) == 0, float('-inf'))
+            attn_mask = torch.where(mask == 0, float("-inf"), 0.0).to(Q.dtype)
+            attn_mask = attn_mask.unsqueeze(1)  # [B, 1, N, N]
         
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        
-        # Apply attention to values
-        out = torch.matmul(attn_weights, V)  # [B, n_heads, N, d_head]
+        # Use memory-efficient SDPA when not returning weights (avoids O(N^2) materialization)
+        if not return_attention and hasattr(F, "scaled_dot_product_attention"):
+            dropout_p = self.dropout.p if self.training else 0.0
+            out = F.scaled_dot_product_attention(
+                Q, K, V, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False
+            )
+        else:
+            # Fallback: manual attention (used when return_attention=True or older PyTorch)
+            scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # [B, n_heads, N, N]
+            if mask is not None:
+                scores = scores.masked_fill(mask.unsqueeze(1) == 0, float("-inf"))
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_weights = self.dropout(attn_weights)
+            out = torch.matmul(attn_weights, V)  # [B, n_heads, N, d_head]
+            if return_attention:
+                out = out.transpose(1, 2).contiguous().view(B, N, self.d_model)
+                out = self.out_proj(out)
+                return out, attn_weights
         
         # Reshape back to [B, N, d_model]
         out = out.transpose(1, 2).contiguous().view(B, N, self.d_model)
-        
-        # Output projection
         out = self.out_proj(out)
-        
-        if return_attention:
-            return out, attn_weights
         return out
 
 
@@ -140,22 +148,27 @@ class CrossAttention(nn.Module):
         K = K.view(B, Nm, self.n_heads, self.d_head).transpose(1, 2)
         V = V.view(B, Nm, self.n_heads, self.d_head).transpose(1, 2)
         
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # [B, n_heads, Nq, Nm]
-        
+        # Build attn_mask for SDPA: 0 = attend, -inf = mask
+        attn_mask = None
         if mask is not None:
-            scores = scores.masked_fill(mask.unsqueeze(1) == 0, float('-inf'))
+            attn_mask = torch.where(mask == 0, float("-inf"), 0.0).to(Q.dtype)
+            attn_mask = attn_mask.unsqueeze(1)  # [B, 1, Nq, Nm]
         
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        
-        # Apply attention to values
-        out = torch.matmul(attn_weights, V)  # [B, n_heads, Nq, d_head]
+        # Use memory-efficient SDPA to avoid O(Nq*Nm) materialization
+        if hasattr(F, "scaled_dot_product_attention"):
+            dropout_p = self.dropout.p if self.training else 0.0
+            out = F.scaled_dot_product_attention(
+                Q, K, V, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False
+            )
+        else:
+            scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # [B, n_heads, Nq, Nm]
+            if mask is not None:
+                scores = scores.masked_fill(mask.unsqueeze(1) == 0, float("-inf"))
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_weights = self.dropout(attn_weights)
+            out = torch.matmul(attn_weights, V)  # [B, n_heads, Nq, d_head]
         
         # Reshape back to [B, Nq, d_model]
         out = out.transpose(1, 2).contiguous().view(B, Nq, self.d_model)
-        
-        # Output projection
         out = self.out_proj(out)
-        
         return out
