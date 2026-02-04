@@ -1,6 +1,7 @@
 """Main training loop."""
 
 import os
+import sys
 import warnings
 import torch
 import torch.nn as nn
@@ -236,18 +237,19 @@ class Trainer:
         except TypeError:
             total_batches = None
 
-        # Each epoch on its own line so the previous bar is not overwritten (cycle positions 0..9)
-        position = self.current_epoch % 10 if self.rank == 0 else 0
+        # Single progress line (position=0, leave=False) so output stays clean; eval/checkpoint use write()
         progress_bar = tqdm(
             dataloader,
             total=total_batches,
-            desc=f"Epoch {self.current_epoch}",
+            desc=f"Ep {self.current_epoch}",
             disable=(self.rank != 0),
-            position=position,
-            leave=True,
-            unit="batch",
-            dynamic_ncols=True,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+            position=0,
+            leave=False,
+            unit="b",
+            ncols=80,
+            dynamic_ncols=False,
+            file=sys.stdout,
+            bar_format="{l_bar}{r_bar} {postfix}",
         )
 
         for batch_idx, batch in enumerate(progress_bar):
@@ -310,7 +312,7 @@ class Trainer:
                     total_losses = {}
                     num_batches_since_log = 0
 
-                # Evaluation: compute metrics, write results above bar (so they stay visible)
+                # Evaluation: one-line summary so terminal stays clean
                 if self.global_step % self.config.eval_every == 0:
                     metrics = self.metrics_computer.compute_and_reset()
                     self._last_eval_metrics = {
@@ -319,21 +321,23 @@ class Trainer:
                         "eval_delta_corr": metrics.get("delta_correlation"),
                     }
                     if self.rank == 0:
-                        msg = (
-                            f"\n--- Evaluation @ step {self.global_step} ---\n"
-                            + format_metrics(metrics)
-                            + "\n---\n"
+                        r2 = metrics.get("baseline_r2") or 0.0
+                        corr = metrics.get("delta_correlation") or 0.0
+                        dmae = metrics.get("delta_mae") or 0.0
+                        ate = metrics.get("ate_mae") or 0.0
+                        progress_bar.write(
+                            f"Eval step {self.global_step}: R²={r2:.3f} Δ_corr={corr:.3f} Δ_MAE={dmae:.3f} ATE_MAE={ate:.4f}"
                         )
-                        progress_bar.write(msg)
                     progress_bar.set_postfix(self._progress_postfix())
                     if self.use_wandb:
                         self.wandb.log({
                             f"train/{k}": v for k, v in metrics.items()
                         }, step=self.global_step)
 
-                # Checkpointing
+                # Checkpointing (log via progress_bar so it doesn't interleave with bar)
                 if self.global_step % self.config.save_every == 0:
-                    self.save_checkpoint(f"checkpoint_step_{self.global_step}.pt")
+                    log_fn = (lambda msg: progress_bar.write(msg)) if self.rank == 0 else None
+                    self.save_checkpoint(f"checkpoint_step_{self.global_step}.pt", log_fn=log_fn)
 
                 # Check if max steps reached
                 if self.global_step >= self.config.max_steps:
@@ -356,13 +360,8 @@ class Trainer:
             # Memory-safe batch size for this stage (attention ~ B*W*N^2; scale down for larger stages)
             stage_batch_size = CurriculumConfig.batch_size_for_stage(stage, self.config.batch_size)
             if self.rank == 0:
-                print(f"\n{'='*60}")
-                print(f"Starting curriculum stage: {stage.name}")
-                print(f"Features: {stage.n_features}, Interventions: {stage.n_interventions}")
-                print(f"Complexity: {stage.complexity}")
-                if stage_batch_size < self.config.batch_size:
-                    print(f"Batch size: {stage_batch_size} (reduced from {self.config.batch_size} for memory)")
-                print(f"{'='*60}\n")
+                batch_note = f", batch={stage_batch_size}" if stage_batch_size < self.config.batch_size else ""
+                print(f"\n>> Stage: {stage.name} | d={stage.n_features} intv={stage.n_interventions} | {stage.complexity}{batch_note}\n")
 
             # Create dataloader for this stage (sharded by rank when DDP)
             dataloader = create_dataloader(
@@ -387,11 +386,12 @@ class Trainer:
         if self.rank == 0:
             print(f"\nTraining completed! Final step: {self.global_step}")
     
-    def save_checkpoint(self, filename: str):
+    def save_checkpoint(self, filename: str, log_fn=None):
         """Save checkpoint (only on rank 0 when using DDP).
         
         Args:
             filename: Checkpoint filename.
+            log_fn: Optional callable(msg) to log the save message (e.g. progress_bar.write). If None, uses print.
         """
         if self.rank != 0:
             if self._is_ddp:
@@ -414,7 +414,8 @@ class Trainer:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
         
         torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved: {checkpoint_path}")
+        out = f"Checkpoint saved: {checkpoint_path}"
+        (log_fn or print)(out)
         if self._is_ddp:
             torch.distributed.barrier()
     

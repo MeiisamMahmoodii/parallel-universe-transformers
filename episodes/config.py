@@ -26,14 +26,14 @@ class CurriculumConfig:
     
     @staticmethod
     def get_default_curriculum():
-        """Get default curriculum stages."""
+        """Get default curriculum stages. PoC: d=20 max, interventions 4-8 only for better quality and bigger batches."""
         return [
             CurriculumStage(
                 name="stage_0_warmup",
                 n_features=5,
                 n_continuous=3,
                 n_categorical=2,
-                n_interventions=2,
+                n_interventions=4,
                 complexity="simple",
                 support_size_range=(32, 64),
                 query_size_range=(16, 24),
@@ -59,26 +59,26 @@ class CurriculumConfig:
                 n_features=20,
                 n_continuous=10,
                 n_categorical=10,
-                n_interventions=8,
+                n_interventions=6,
                 complexity="moderate",
                 support_size_range=(64, 128),
                 query_size_range=(16, 32),
                 missingness_prob=0.05,
                 noise_scale=0.7,
-                min_steps=30000,
+                min_steps=25000,
             ),
             CurriculumStage(
-                name="stage_3_advanced",
+                name="stage_3_final",
                 n_features=20,
                 n_continuous=10,
                 n_categorical=10,
-                n_interventions=16,
-                complexity="complex",
+                n_interventions=8,
+                complexity="moderate",
                 support_size_range=(64, 128),
                 query_size_range=(16, 32),
-                missingness_prob=0.1,
-                noise_scale=1.0,
-                min_steps=50000,
+                missingness_prob=0.05,
+                noise_scale=0.8,
+                min_steps=40000,
             ),
         ]
     
