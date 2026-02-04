@@ -130,6 +130,8 @@ torchrun --nproc_per_node=2 train_model.py --mixed-precision --batch-size 32 --g
 ```
 Single-GPU is the same script with one process: `torchrun --nproc_per_node=1 train_model.py ...`
 
+**Memory and curriculum:** Training uses a curriculum (more features and interventions in later stages). Attention memory scales as batch × worlds × sequence², so later stages can hit CUDA OOM. Two mitigations are applied by default: (1) **gradient checkpointing** is on (disable with `--no-gradient-checkpointing` if you have plenty of VRAM). (2) **Per-stage batch size** is reduced with a safety margin (e.g. stage 1 runs with per-GPU batch size 1 while accumulation keeps the effective batch large). If you still see OOM, try lowering `--batch-size` manually or set `PYTORCH_ALLOC_CONF=expandable_segments:True`.
+
 ## Evaluation
 
 ```bash

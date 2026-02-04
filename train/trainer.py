@@ -353,17 +353,21 @@ class Trainer:
             if self.global_step >= self.config.max_steps:
                 break
 
+            # Memory-safe batch size for this stage (attention ~ B*W*N^2; scale down for larger stages)
+            stage_batch_size = CurriculumConfig.batch_size_for_stage(stage, self.config.batch_size)
             if self.rank == 0:
                 print(f"\n{'='*60}")
                 print(f"Starting curriculum stage: {stage.name}")
                 print(f"Features: {stage.n_features}, Interventions: {stage.n_interventions}")
                 print(f"Complexity: {stage.complexity}")
+                if stage_batch_size < self.config.batch_size:
+                    print(f"Batch size: {stage_batch_size} (reduced from {self.config.batch_size} for memory)")
                 print(f"{'='*60}\n")
 
             # Create dataloader for this stage (sharded by rank when DDP)
             dataloader = create_dataloader(
                 stage,
-                batch_size=self.config.batch_size,
+                batch_size=stage_batch_size,
                 num_workers=self.config.num_workers,
                 seed=self.current_epoch,
                 rank=self.rank,

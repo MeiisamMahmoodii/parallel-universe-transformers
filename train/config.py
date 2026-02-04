@@ -16,7 +16,7 @@ class TrainingConfig:
     dropout: float = 0.1
     cross_world_layers: List[int] = None
     attend_to_all_worlds: bool = True
-    use_gradient_checkpointing: bool = False
+    use_gradient_checkpointing: bool = True  # Reduces memory for curriculum stages with long sequences
     
     # Training
     batch_size: int = 32

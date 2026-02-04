@@ -102,3 +102,32 @@ class CurriculumConfig:
         
         # Return final stage if beyond curriculum
         return stages[-1]
+
+    @staticmethod
+    def batch_size_for_stage(stage: "CurriculumStage", max_batch_size: int) -> int:
+        """Memory-safe batch size for a curriculum stage to avoid OOM on larger sequences.
+
+        Attention memory scales as B * W * N^2 (batch, worlds, sequence length in tokens).
+        We scale down batch size for stages with larger W or N so peak memory stays bounded.
+
+        Args:
+            stage: Current curriculum stage.
+            max_batch_size: Desired batch size (e.g. config.batch_size).
+
+        Returns:
+            Batch size to use for this stage (at most max_batch_size).
+        """
+        stages = CurriculumConfig.get_default_curriculum()
+        ref = stages[0]
+        # Reference: stage_0 max tokens and worlds
+        ref_n = ref.support_size_range[1] * (ref.n_features + 1) + ref.query_size_range[1] * (ref.n_features + 1)
+        ref_w = ref.n_interventions + 1
+        cur_n = stage.support_size_range[1] * (stage.n_features + 1) + stage.query_size_range[1] * (stage.n_features + 1)
+        cur_w = stage.n_interventions + 1
+        # Keep B * W * N^2 <= ref level => B_stage <= max_batch_size * (ref_w * ref_n^2) / (cur_w * cur_n^2)
+        ratio = (ref_w * (ref_n ** 2)) / (cur_w * (cur_n ** 2))
+        # Apply a safety margin because real batches can hit the max simultaneously in Ns/Nq and trigger spikes.
+        safety_margin = 0.4  # empirically keeps attention allocations < 4GB even in worst-case stage_1 batches
+        adjusted_ratio = ratio * safety_margin
+        b = max(1, int(max_batch_size * adjusted_ratio))
+        return min(b, max_batch_size)

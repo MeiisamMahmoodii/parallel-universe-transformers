@@ -54,7 +54,7 @@ def main():
     
     # Optimization
     parser.add_argument('--mixed-precision', action='store_true', help='Use mixed precision')
-    parser.add_argument('--gradient-checkpointing', action='store_true', help='Use gradient checkpointing')
+    parser.add_argument('--no-gradient-checkpointing', action='store_true', help='Disable gradient checkpointing (uses more GPU memory)')
     
     # Logging
     parser.add_argument('--log-every', type=int, default=100, help='Log every N steps')
@@ -74,6 +74,9 @@ def main():
     
     args = parser.parse_args()
     
+    # Help PyTorch reuse large allocations when sequence length spikes (prevents fragmentation OOMs).
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     # Distributed setup (no-op if not launched with torchrun)
     rank, local_rank, world_size = setup_distributed()
     if world_size > 1:
@@ -108,7 +111,7 @@ def main():
         lambda_delta=args.lambda_delta,
         lambda_delta_warmup_steps=args.lambda_delta_warmup_steps,
         use_mixed_precision=args.mixed_precision,
-        use_gradient_checkpointing=args.gradient_checkpointing,
+        use_gradient_checkpointing=not args.no_gradient_checkpointing,
         log_every=args.log_every,
         eval_every=args.eval_every,
         save_every=args.save_every,
