@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import Optional, Dict, Any
 import json
+from tqdm import tqdm
 
 # Progress UI (Rich preferred; tqdm fallback)
 try:
@@ -25,7 +26,6 @@ try:
     _HAS_RICH = True
 except Exception:  # pragma: no cover (fallback)
     _HAS_RICH = False
-    from tqdm import tqdm
 
 # Prefer new amp API (avoids FutureWarning under PyTorch 2+)
 if hasattr(torch.amp, "autocast") and hasattr(torch.amp, "GradScaler"):
@@ -427,12 +427,20 @@ class Trainer:
             )
             return epoch_avg
 
-        # Fallback: tqdm (or non-rank0)
+        # Non-rank0: no progress UI (keeps output clean under DDP)
+        if self.rank != 0:
+            for batch_idx, batch in enumerate(dataloader):
+                _step_body(batch_idx, batch, log_fn=None)
+                if self.global_step >= self.config.max_steps:
+                    break
+            return {k: v / max(epoch_batches, 1) for k, v in epoch_losses_sum.items()}
+
+        # Rank 0 fallback: tqdm
         progress_bar = tqdm(
             dataloader,
             total=total_batches,
             desc=f"Ep {self.current_epoch}",
-            disable=(self.rank != 0),
+            disable=False,
             position=0,
             leave=False,
             unit="b",
@@ -442,19 +450,17 @@ class Trainer:
             bar_format="{l_bar}{r_bar} {postfix}",
         )
         for batch_idx, batch in enumerate(progress_bar):
-            _step_body(batch_idx, batch, log_fn=(lambda msg: progress_bar.write(msg)) if self.rank == 0 else None)
-            if self.rank == 0:
-                progress_bar.set_postfix(self._progress_postfix())
+            _step_body(batch_idx, batch, log_fn=(lambda msg: progress_bar.write(msg)))
+            progress_bar.set_postfix(self._progress_postfix())
             if self.global_step >= self.config.max_steps:
                 break
 
         epoch_avg = {k: v / max(epoch_batches, 1) for k, v in epoch_losses_sum.items()}
-        if self.rank == 0:
-            loss_bits = []
-            for k in ("total", "pred", "delta"):
-                if k in epoch_avg:
-                    loss_bits.append(f"{k}={epoch_avg[k]:.3f}")
-            print(f"Epoch {self.current_epoch}: " + (" ".join(loss_bits) if loss_bits else "(no losses)"))
+        loss_bits = []
+        for k in ("total", "pred", "delta"):
+            if k in epoch_avg:
+                loss_bits.append(f"{k}={epoch_avg[k]:.3f}")
+        print(f"Epoch {self.current_epoch}: " + (" ".join(loss_bits) if loss_bits else "(no losses)"))
         return epoch_avg
     
     def train(self):

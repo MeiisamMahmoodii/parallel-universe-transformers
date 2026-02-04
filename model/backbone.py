@@ -138,7 +138,7 @@ class TransformerEncoder(nn.Module):
         for layer_idx, block in enumerate(self.blocks):
             # Self-attention block
             if self.use_gradient_checkpointing and self.training:
-                hidden = torch.utils.checkpoint.checkpoint(block, hidden, mask)
+                hidden = torch.utils.checkpoint.checkpoint(block, hidden, mask, use_reentrant=False)
             else:
                 hidden = block(hidden, mask)
             
@@ -147,7 +147,7 @@ class TransformerEncoder(nn.Module):
                 cross_world_attn = self.cross_world_attns[str(layer_idx)]
                 if self.use_gradient_checkpointing and self.training:
                     hidden = torch.utils.checkpoint.checkpoint(
-                        cross_world_attn, hidden, W, Ns, Nq
+                        cross_world_attn, hidden, W, Ns, Nq, use_reentrant=False
                     )
                 else:
                     hidden = cross_world_attn(hidden, W, Ns, Nq)
