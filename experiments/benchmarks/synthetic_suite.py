@@ -180,25 +180,46 @@ class SyntheticBenchmark:
         
         # Compute errors
         baseline_rmse = np.sqrt(np.mean((baseline_pred - baseline_true) ** 2))
+        baseline_mae = np.mean(np.abs(baseline_pred - baseline_true))
+        ss_tot_baseline = np.sum((baseline_true - np.mean(baseline_true)) ** 2)
+        ss_res_baseline = np.sum((baseline_pred - baseline_true) ** 2)
+        baseline_r2 = float(1.0 - ss_res_baseline / (ss_tot_baseline + 1e-8)) if ss_tot_baseline > 1e-8 else 0.0
+
         cf_rmse = np.sqrt(np.mean((cf_pred - cf_true) ** 2))
+        cf_mae = np.mean(np.abs(cf_pred - cf_true))
+
         delta_rmse = np.sqrt(np.mean((deltas_pred - deltas_true) ** 2))
-        
+        delta_mae = np.mean(np.abs(deltas_pred - deltas_true))
+        # Delta correlation (flatten and compute Pearson)
+        dp_flat = deltas_pred.ravel()
+        dt_flat = deltas_true.ravel()
+        if np.std(dp_flat) > 1e-8 and np.std(dt_flat) > 1e-8:
+            delta_correlation = float(np.corrcoef(dp_flat, dt_flat)[0, 1])
+        else:
+            delta_correlation = 0.0
+
         ate_pred = deltas_pred.mean(axis=1)
         ate_true = deltas_true.mean(axis=1)
         ate_mae = np.mean(np.abs(ate_pred - ate_true))
-        
+
         metrics = {
             'scm_type': scm_type,
             'baseline_rmse': float(baseline_rmse),
+            'baseline_mae': float(baseline_mae),
+            'baseline_r2': float(baseline_r2),
             'cf_rmse': float(cf_rmse),
+            'cf_mae': float(cf_mae),
             'delta_rmse': float(delta_rmse),
+            'delta_mae': float(delta_mae),
+            'delta_correlation': float(delta_correlation),
             'ate_mae': float(ate_mae),
             'n_samples': n_samples,
             'n_interventions': n_interventions
         }
-        
-        print(f"Results: Baseline RMSE={baseline_rmse:.4f}, "
-              f"CF RMSE={cf_rmse:.4f}, Delta RMSE={delta_rmse:.4f}")
+
+        print(f"Results: Baseline RMSE={baseline_rmse:.4f}, MAE={baseline_mae:.4f}, R²={baseline_r2:.4f}; "
+              f"CF RMSE={cf_rmse:.4f}; Delta RMSE={delta_rmse:.4f}, MAE={delta_mae:.4f}, Corr={delta_correlation:.4f}; "
+              f"ATE MAE={ate_mae:.4f}")
         
         return metrics
     
@@ -238,9 +259,9 @@ class SyntheticBenchmark:
         for scm_type, metrics in results.items():
             if 'error' not in metrics:
                 print(f"\n{scm_type}:")
-                print(f"  Baseline RMSE: {metrics['baseline_rmse']:.4f}")
-                print(f"  CF RMSE: {metrics['cf_rmse']:.4f}")
-                print(f"  Delta RMSE: {metrics['delta_rmse']:.4f}")
+                print(f"  Baseline RMSE: {metrics['baseline_rmse']:.4f}, MAE: {metrics['baseline_mae']:.4f}, R²: {metrics['baseline_r2']:.4f}")
+                print(f"  CF RMSE: {metrics['cf_rmse']:.4f}, MAE: {metrics['cf_mae']:.4f}")
+                print(f"  Delta RMSE: {metrics['delta_rmse']:.4f}, MAE: {metrics['delta_mae']:.4f}, Corr: {metrics['delta_correlation']:.4f}")
                 print(f"  ATE MAE: {metrics['ate_mae']:.4f}")
         
         return results
