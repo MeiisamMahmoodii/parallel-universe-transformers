@@ -2,6 +2,29 @@
 
 How to run unit tests, eval-by-difficulty, checkpoint × difficulty matrix, synthetic benchmark suite, and the comparison protocol. Where results live and how they map to "Option A" vs "Option B" report tables.
 
+## 0. Full test and eval (all checkpoints, GPU, one command)
+
+- **Purpose:** Run every test and evaluation in one go: unit tests, checkpoint sanity tests (per checkpoint), eval matrix (all checkpoints × difficulties), and comparison protocol (ours vs baseline) per checkpoint. Uses GPU by default and writes all outputs under a single directory for later inspection.
+- **Run:**
+  ```bash
+  # Default: checkpoints/ scanned, results under results/full_test_<timestamp>
+  uv run python scripts/run_full_test_and_eval.py
+
+  # Custom output dir and checkpoint dir
+  uv run python scripts/run_full_test_and_eval.py --checkpoint-dir checkpoints --output-dir results/my_run
+
+  # Fast smoke run: one seed (42), 10 batches, one stage (use for a quick sanity check)
+  uv run python scripts/run_full_test_and_eval.py --quick --output-dir results/quick_run
+  ```
+- **Options:** `--device cuda` (default), `--seeds 42 43 44`, `--num-batches 200`, `--stages stage_1_basic` (or `all` for every curriculum stage). `--quick` sets seeds=[42], num_batches=10, stages=[stage_1_basic].
+- **Output layout:** All results live under `--output-dir`:
+  - `unit_tests.log` — pytest for test_scm + test_model
+  - `pytest_checkpoint_<name>.log` — pytest test_checkpoint per checkpoint
+  - `eval_matrix/checkpoint_difficulty_matrix.csv`, `eval_matrix/checkpoint_difficulty_matrix.json`
+  - `compare/<checkpoint_stem>/` — method_ours_seed*.json, method_baseline_seed*.json, `significance.json` (bootstrap CI for delta_correlation)
+  - `summary.json` — single place to see what ran, pass/fail, and paths to all of the above
+- **Files:** [scripts/run_full_test_and_eval.py](../scripts/run_full_test_and_eval.py)
+
 ## 1. Unit tests (checkpoint load and forward)
 
 - **Purpose:** Sanity check: load checkpoint, build model from config, run one batch, assert shapes and delta consistency (no NaN/Inf, deltas = counterfactuals − baseline).

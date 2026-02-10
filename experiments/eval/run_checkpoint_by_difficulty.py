@@ -54,6 +54,7 @@ def run_eval_for_stage(model, stage, device, seed: int, num_batches: int):
         seed=seed,
         rank=0,
         world_size=1,
+        pin_memory=False,
     )
     metrics_computer = MetricsComputer()
 

@@ -484,7 +484,8 @@ class Trainer:
                 num_workers=self.config.num_workers,
                 seed=self.current_epoch,
                 rank=self.rank,
-                world_size=self.world_size
+                world_size=self.world_size,
+                pin_memory=self.config.pin_memory,
             )
 
             # Train for this stage

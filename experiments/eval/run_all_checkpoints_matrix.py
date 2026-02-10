@@ -133,7 +133,7 @@ def main():
                 print(
                     f"{ckpt_name} x {stage.name} seed={seed}: delta_corr={dc:.4f}"
                     if dc is not None
-                    else f\"{ckpt_name} x {stage.name} seed={seed}: delta_corr=n/a\"
+                    else f"{ckpt_name} x {stage.name} seed={seed}: delta_corr=n/a"
                 )
 
             # Summary row (mean±std) if multiple seeds

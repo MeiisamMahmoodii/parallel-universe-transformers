@@ -170,7 +170,8 @@ def create_dataloader(
     num_workers: int = 4,
     seed: Optional[int] = None,
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    pin_memory: bool = True,
 ) -> torch.utils.data.DataLoader:
     """Create a DataLoader for SCM episodes.
     
@@ -181,6 +182,7 @@ def create_dataloader(
         seed: Random seed.
         rank: Distributed rank (for DDP; each rank gets a shard of episodes).
         world_size: Number of distributed processes.
+        pin_memory: If True, use pinned memory (set False to avoid PyTorch pin_memory device deprecation warnings).
         
     Returns:
         DataLoader instance.
@@ -198,5 +200,5 @@ def create_dataloader(
         batch_size=batch_size,
         num_workers=num_workers,
         collate_fn=packer.collate_episodes,
-        pin_memory=True
+        pin_memory=pin_memory,
     )

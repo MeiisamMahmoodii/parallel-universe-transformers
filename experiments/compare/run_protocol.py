@@ -182,6 +182,7 @@ def main():
             seed=seed,
             rank=0,
             world_size=1,
+            pin_memory=False,
         )
         metrics_ours = run_method_on_dataloader(model_ours, dataloader, device, args.num_batches)
         metrics_ours["method"] = "ours"
@@ -202,6 +203,7 @@ def main():
                 seed=seed,
                 rank=0,
                 world_size=1,
+                pin_memory=False,
             )
             baseline = MeanBaselineStub(device=str(device))
             metrics_baseline = run_method_on_dataloader(baseline, dataloader2, device, args.num_batches)

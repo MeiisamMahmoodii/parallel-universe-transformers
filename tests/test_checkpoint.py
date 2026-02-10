@@ -66,6 +66,7 @@ def test_checkpoint_load_and_forward():
         seed=42,
         rank=0,
         world_size=1,
+        pin_memory=False,  # avoid PyTorch pin_memory(device) deprecation warnings
     )
 
     batch = next(iter(dataloader))
