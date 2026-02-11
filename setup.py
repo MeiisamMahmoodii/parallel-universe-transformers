@@ -5,7 +5,8 @@ setup(
     version="0.1.0",
     description="Black-box meta-learner for causal effect estimation using parallel-world transformers",
     author="Meisam",
-    packages=find_packages(),
+    packages=find_packages(where="code"),
+    package_dir={"": "code"},
     python_requires=">=3.9",
     install_requires=[
         "torch>=2.0.0",

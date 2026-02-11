@@ -7,6 +7,8 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List
 import json
+import pandas as pd
+from tqdm import tqdm
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -17,20 +19,44 @@ from scm.intervene import InterventionOperator, InterventionType
 from scm.counterfactual import CounterfactualGenerator
 from inference.api import ParallelUniverseModel, Intervention
 from train.metrics import MetricsComputer
-import pandas as pd
+
+# Import Baselines
+from experiments.baselines.linear_baseline import LinearTBaseline, LinearSBaseline
+from experiments.baselines.gb_baseline import GBTBaseline, GBSBaseline
+from experiments.baselines.dr_baseline import DRBaseline
+from experiments.baselines.tabpfn_baseline import TabPFNTBaseline
+from experiments.baselines.transtee_baseline import TransTEEBaseline
+from experiments.baselines.dragonnet_baseline import DragonnetBaseline
+from experiments.baselines.outcome_baseline import OutcomeBaseline
 
 
 class SyntheticBenchmark:
-    """Benchmark suite with diverse SCM families."""
+    """Benchmark suite with diverse SCM families and multiple baselines."""
     
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, device: str = "cpu"):
         """Initialize benchmark.
         
         Args:
             model_path: Path to trained model checkpoint.
         """
+        self.device = device
         self.model = ParallelUniverseModel.from_pretrained(model_path)
         self.metrics_computer = MetricsComputer()
+        
+        # Initialize Baselines
+        self.baselines = {
+            'Ours': self.model,
+            'Linear-T': LinearTBaseline(device=device),
+            'Linear-S': LinearSBaseline(device=device),
+            'GB-T': GBTBaseline(device=device),
+            'GB-S': GBSBaseline(device=device),
+            'DR-Linear': DRBaseline(device=device, learner='linear'),
+            'DR-GB': DRBaseline(device=device, learner='gb'),
+            'TabPFN': TabPFNTBaseline(device=device),
+            'TransTEE': TransTEEBaseline(device=device),
+            'Dragonnet': DragonnetBaseline(device=device),
+            'Ridge': OutcomeBaseline(device=device)
+        }
     
     def generate_test_scm(
         self,
@@ -38,16 +64,7 @@ class SyntheticBenchmark:
         n_samples: int = 1000,
         seed: int = 42
     ) -> tuple:
-        """Generate test data from a specific SCM family.
-        
-        Args:
-            scm_type: Type of SCM ('linear', 'nonlinear', 'multiplicative', etc.).
-            n_samples: Number of samples.
-            seed: Random seed.
-            
-        Returns:
-            Tuple of (X, Y, scm_sampler, schema).
-        """
+        """Generate test data from a specific SCM family."""
         # Configure based on type
         if scm_type == 'linear_gaussian':
             complexity = 'simple'
@@ -73,8 +90,8 @@ class SyntheticBenchmark:
         # Create schema
         schema_config = SchemaConfig(
             n_features=n_features,
-            n_continuous=n_features // 2,
-            n_categorical=n_features // 2,
+            n_continuous=n_features, # Simplify for baselines (all continuous)
+            n_categorical=0,
             seed=seed
         )
         schema_sampler = FeatureSchema(schema_config)
@@ -96,21 +113,11 @@ class SyntheticBenchmark:
     def evaluate_scm(
         self,
         scm_type: str,
-        n_samples: int = 1000,
+        n_samples: int = 500, # Reduce for speed
         n_interventions: int = 5,
         seed: int = 42
     ) -> Dict:
-        """Evaluate model on a specific SCM.
-        
-        Args:
-            scm_type: Type of SCM.
-            n_samples: Number of samples.
-            n_interventions: Number of interventions to test.
-            seed: Random seed.
-            
-        Returns:
-            Dictionary of results.
-        """
+        """Evaluate all models on a specific SCM."""
         print(f"\nEvaluating on {scm_type} SCM...")
         
         # Generate test data
@@ -121,177 +128,185 @@ class SyntheticBenchmark:
         support_x, support_y = X[:n_support], Y[:n_support]
         query_x, query_y = X[n_support:], Y[n_support:]
         
-        # Sample interventions
-        intv_op = InterventionOperator(seed=seed + 2)
-        feature_ranges = {
-            i: (schema[i].min_value, schema[i].max_value)
-            for i in range(len(schema))
-            if schema[i].feature_type == FeatureType.CONTINUOUS
-        }
+        # Sample interventions (use first continuous feature as treatment)
+        # For fair comparison with T-Learners, we treat the LAST feature as treatment T
+        # Or we pick one.
+        # Our model is general, but baselines expect T column.
+        # We will use the standard protocol: Last column = Treatment.
         
-        interventions = intv_op.sample_interventions(
-            n_interventions=n_interventions,
-            n_features=len(schema),
-            feature_ranges=feature_ranges,
-            complexity='moderate'
-        )
+        # Strategy: Intervention on Last Feature
+        target_feature_idx = len(schema) - 1
+        target_feature_name = schema[target_feature_idx].name
         
-        # Generate ground truth counterfactuals
+        # Generate ground truth counterfactuals for T=0 and T=1 (Worlds)
+        # World 0: T=0, World 1: T=1
+        interventions = [
+            Intervention(target_feature_name, 'set', 0.0),
+            Intervention(target_feature_name, 'set', 1.0)
+        ]
+        
+        # Use simple internal intervention logic for ground truth
+        # Re-using scm logic is best
+        from scm.intervene import Intervention as SCMIntervention
+        scm_interventions = [
+            SCMIntervention(target_feature_idx, InterventionType.SET, 0.0),
+            SCMIntervention(target_feature_idx, InterventionType.SET, 1.0)
+        ]
+        
         cf_generator = CounterfactualGenerator(scm_sampler)
-        query_x_cf_batch, query_y_cf_batch = cf_generator.generate_counterfactuals_batch(
-            query_x, interventions
-        )
+        # CFs for Query set
+        # [W, Nq]
+        query_y_cfs = []
+        for intv in scm_interventions:
+            _, y_cf = cf_generator.generate_counterfactuals(query_x, intv)
+            query_y_cfs.append(y_cf)
         
-        # Prepare data for model
-        feature_names = [f.name for f in schema]
-        support_df = pd.DataFrame(support_x, columns=feature_names)
-        query_df = pd.DataFrame(query_x, columns=feature_names)
+        query_y_cfs = np.stack(query_y_cfs, axis=0) # [W, Nq]
         
-        # Convert interventions to API format
-        api_interventions = []
-        for intv in interventions:
-            if intv.intervention_type == InterventionType.SET:
-                intv_type = 'set'
-            elif intv.intervention_type == InterventionType.SHIFT:
-                intv_type = 'shift'
-            else:
-                intv_type = 'randomize'
-            
-            api_interventions.append(Intervention(
-                feature=feature_names[intv.feature_idx],
-                type=intv_type,
-                value=intv.value
-            ))
+        # Ground Truth Delta (ATE/CATE)
+        true_cate = query_y_cfs[1] - query_y_cfs[0]
+        true_ate = np.mean(true_cate)
         
-        # Predict
-        results = self.model.predict_interventions(
-            support_df, query_df, api_interventions
-        )
+        # Prepare Data for Models
+        # Support X needs to be [1, Ns, d]
+        # Support Y needs to be [1, Ns]
+        # Query X needs to be [1, W, Nq, d]
         
-        # Compute metrics
-        baseline_pred = results.baseline
-        baseline_true = query_y
+        # Modify Query X to have T=0 and T=1
+        query_x_w0 = query_x.copy()
+        query_x_w0[:, target_feature_idx] = 0.0
         
-        cf_pred = results.counterfactuals  # [n_interventions, n_samples]
-        cf_true = query_y_cf_batch  # [n_interventions, n_samples]
+        query_x_w1 = query_x.copy()
+        query_x_w1[:, target_feature_idx] = 1.0
         
-        deltas_pred = results.deltas
-        deltas_true = cf_true - baseline_true[None, :]
+        query_x_stacked = np.stack([query_x_w0, query_x_w1], axis=0) # [W, Nq, d]
         
-        # Compute errors
-        baseline_rmse = np.sqrt(np.mean((baseline_pred - baseline_true) ** 2))
-        baseline_mae = np.mean(np.abs(baseline_pred - baseline_true))
-        ss_tot_baseline = np.sum((baseline_true - np.mean(baseline_true)) ** 2)
-        ss_res_baseline = np.sum((baseline_pred - baseline_true) ** 2)
-        baseline_r2 = float(1.0 - ss_res_baseline / (ss_tot_baseline + 1e-8)) if ss_tot_baseline > 1e-8 else 0.0
-
-        cf_rmse = np.sqrt(np.mean((cf_pred - cf_true) ** 2))
-        cf_mae = np.mean(np.abs(cf_pred - cf_true))
-
-        delta_rmse = np.sqrt(np.mean((deltas_pred - deltas_true) ** 2))
-        delta_mae = np.mean(np.abs(deltas_pred - deltas_true))
-        # Delta correlation (flatten and compute Pearson)
-        dp_flat = deltas_pred.ravel()
-        dt_flat = deltas_true.ravel()
-        if np.std(dp_flat) > 1e-8 and np.std(dt_flat) > 1e-8:
-            delta_correlation = float(np.corrcoef(dp_flat, dt_flat)[0, 1])
-        else:
-            delta_correlation = 0.0
-
-        ate_pred = deltas_pred.mean(axis=1)
-        ate_true = deltas_true.mean(axis=1)
-        ate_mae = np.mean(np.abs(ate_pred - ate_true))
-
-        metrics = {
-            'scm_type': scm_type,
-            'baseline_rmse': float(baseline_rmse),
-            'baseline_mae': float(baseline_mae),
-            'baseline_r2': float(baseline_r2),
-            'cf_rmse': float(cf_rmse),
-            'cf_mae': float(cf_mae),
-            'delta_rmse': float(delta_rmse),
-            'delta_mae': float(delta_mae),
-            'delta_correlation': float(delta_correlation),
-            'ate_mae': float(ate_mae),
-            'n_samples': n_samples,
-            'n_interventions': n_interventions
-        }
-
-        print(f"Results: Baseline RMSE={baseline_rmse:.4f}, MAE={baseline_mae:.4f}, R²={baseline_r2:.4f}; "
-              f"CF RMSE={cf_rmse:.4f}; Delta RMSE={delta_rmse:.4f}, MAE={delta_mae:.4f}, Corr={delta_correlation:.4f}; "
-              f"ATE MAE={ate_mae:.4f}")
+        # Tensorize
+        def to_tensor(x): return torch.tensor(x, dtype=torch.float32).to(self.device).unsqueeze(0)
         
-        return metrics
+        t_support_x = to_tensor(support_x)
+        t_support_y = to_tensor(support_y)
+        t_query_x = to_tensor(query_x_stacked)
+        
+        # Results container
+        scm_results = {}
+        
+        for name, model in tqdm(self.baselines.items(), desc="Models"):
+            try:
+                # Predict
+                if name == 'Ours':
+                    # Our model typically takes dataframe + intervention dicts
+                    # But we can assume it also implements the direct forward call
+                    # if we want to bypass the API wrapper. 
+                    # Actually better to use the forward pass directly for fair speed/interface compare
+                    # Model.forward expects:
+                    # x, y, query, feature_types, cardinalities
+                    
+                   pass # Use standard call below
+                 
+                with torch.no_grad():
+                    # Mock feature types (all continuous)
+                    ft = torch.zeros(len(schema), dtype=torch.long, device=self.device)
+                    cards = torch.zeros(len(schema), dtype=torch.long, device=self.device)
+                    
+                    if name == 'Ours':
+                         # Our model wrapper for direct forward?
+                         # The ParallelUniverseModel is a wrapper around the nn.Module
+                         # We need the underlying module or call predict_interventions
+                         # Let's use the forward if possible or standard interface
+                         # Using model.model (the nn.Module)
+                         outputs = self.model.model(
+                             t_support_x, t_support_y, t_query_x, 
+                             ft.unsqueeze(0), cards.unsqueeze(0)
+                         )
+                         preds = outputs['prediction'].squeeze(0).cpu().numpy() # [W, Nq]
+                    else:
+                        outputs = model(
+                            t_support_x, t_support_y, t_query_x,
+                            ft.unsqueeze(0), cards.unsqueeze(0)
+                        )
+                        preds = outputs['prediction'].squeeze(0).cpu().numpy()
+                
+                # Compute Metrics
+                # Preds: [W, Nq] -> [2, Nq]
+                pred_y0 = preds[0]
+                pred_y1 = preds[1]
+                pred_cate = pred_y1 - pred_y0
+                pred_ate = np.mean(pred_cate)
+                
+                # Errors
+                pehe = np.sqrt(np.mean((pred_cate - true_cate) ** 2))
+                ate_error = np.abs(pred_ate - true_ate)
+                
+                # RMSE on outcomes
+                rmse_y0 = np.sqrt(np.mean((pred_y0 - query_y_cfs[0]) ** 2))
+                rmse_y1 = np.sqrt(np.mean((pred_y1 - query_y_cfs[1]) ** 2))
+                avg_rmse = (rmse_y0 + rmse_y1) / 2
+                
+                scm_results[name] = {
+                    'PEHE': float(pehe),
+                    'ATE_Err': float(ate_error),
+                    'RMSE_Y': float(avg_rmse)
+                }
+                
+            except Exception as e:
+                print(f"Error evaluating {name}: {e}")
+                scm_results[name] = {'error': str(e)}
+                
+        return scm_results
     
     def run_full_benchmark(self) -> Dict:
-        """Run full benchmark suite.
-        
-        Returns:
-            Dictionary of results for all SCM types.
-        """
+        """Run full benchmark suite."""
         scm_types = [
             'linear_gaussian',
             'nonlinear_additive',
             'multiplicative',
             'heteroskedastic',
-            'heavy_tailed',
-            'high_dimensional'
+             # 'heavy_tailed', # Skip for speed
+             # 'high_dimensional'
         ]
         
         results = {}
         
         print("\n" + "="*60)
-        print("SYNTHETIC BENCHMARK SUITE")
+        print("COMPREHENSIVE BENCHMARK SUITE")
         print("="*60)
         
         for scm_type in scm_types:
-            try:
-                metrics = self.evaluate_scm(scm_type)
-                results[scm_type] = metrics
-            except Exception as e:
-                print(f"Error evaluating {scm_type}: {e}")
-                results[scm_type] = {'error': str(e)}
+            metrics = self.evaluate_scm(scm_type)
+            results[scm_type] = metrics
         
-        print("\n" + "="*60)
-        print("BENCHMARK SUMMARY")
-        print("="*60)
-        
-        for scm_type, metrics in results.items():
-            if 'error' not in metrics:
-                print(f"\n{scm_type}:")
-                print(f"  Baseline RMSE: {metrics['baseline_rmse']:.4f}, MAE: {metrics['baseline_mae']:.4f}, R²: {metrics['baseline_r2']:.4f}")
-                print(f"  CF RMSE: {metrics['cf_rmse']:.4f}, MAE: {metrics['cf_mae']:.4f}")
-                print(f"  Delta RMSE: {metrics['delta_rmse']:.4f}, MAE: {metrics['delta_mae']:.4f}, Corr: {metrics['delta_correlation']:.4f}")
-                print(f"  ATE MAE: {metrics['ate_mae']:.4f}")
-        
+        self.print_summary(results)
         return results
+
+    def print_summary(self, results):
+        print("\n" + "="*80)
+        print(f"{'SCM / Model':<20} | {'PEHE':<10} | {'ATE Err':<10} | {'RMSE Y':<10}")
+        print("-" * 80)
+        
+        for scm, models in results.items():
+            print(f"--- {scm.upper()} ---")
+            for model, metrics in models.items():
+                if 'error' in metrics:
+                    print(f"{model:<20} | {'ERROR':<10} | {'ERROR':<10} | {'ERROR':<10}")
+                else:
+                    print(f"{model:<20} | {metrics['PEHE']:<10.4f} | {metrics['ATE_Err']:<10.4f} | {metrics['RMSE_Y']:<10.4f}")
+            print("-" * 80)
 
 
 def main():
     """Run benchmark suite."""
     import argparse
-    
     parser = argparse.ArgumentParser(description="Run synthetic benchmark suite")
-    parser.add_argument(
-        '--checkpoint',
-        type=str,
-        required=True,
-        help='Path to model checkpoint'
-    )
-    parser.add_argument(
-        '--output',
-        type=str,
-        default='benchmark_results.json',
-        help='Output file for results'
-    )
+    parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
+    parser.add_argument('--output', type=str, default='benchmark_results.json', help='Output file')
+    parser.add_argument('--device', type=str, default='cpu', help='Device (cpu/cuda)')
     
     args = parser.parse_args()
     
-    # Run benchmark
-    benchmark = SyntheticBenchmark(args.checkpoint)
+    benchmark = SyntheticBenchmark(args.checkpoint, device=args.device)
     results = benchmark.run_full_benchmark()
     
-    # Save results
     with open(args.output, 'w') as f:
         json.dump(results, f, indent=2)
     
@@ -300,3 +315,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

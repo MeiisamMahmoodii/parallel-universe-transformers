@@ -44,7 +44,7 @@ uv sync                    # Install dependencies (creates .venv, uses pyproject
 uv sync --all-extras       # Include dev + logging extras (pytest, wandb, etc.)
 uv lock                    # Generate uv.lock for reproducible installs
 uv run python script.py    # Run script in project environment
-uv run pytest tests/       # Run tests
+uv run pytest test/        # Run tests
 ```
 
 With pip:
@@ -55,8 +55,7 @@ pip install -e ".[dev]"  # or pip install -e .
 ## Quick Start
 
 ```python
-from inference.engine import ParallelUniverseModel
-from inference.api import Intervention
+from inference.api import ParallelUniverseModel, Intervention
 
 # Load model
 model = ParallelUniverseModel.from_pretrained("checkpoints/model.pt")
@@ -84,58 +83,76 @@ print(f"Uncertainty: {results.uncertainty}")
 
 ```
 parallel-universe-transformers/
-├── scm/                    # Synthetic SCM engine
-│   ├── schema.py          # Feature schema sampler
-│   ├── mechanisms.py      # Structural equation functions
-│   ├── noise.py           # Noise distributions
-│   ├── sample.py          # Observational sampling
-│   ├── intervene.py       # Do-operator
-│   └── counterfactual.py  # Counterfactual computation
-├── episodes/              # Episode generation
-│   ├── packer.py         # Tensor packing
-│   ├── dataset.py        # PyTorch dataset
-│   └── config.py         # Curriculum config
-├── model/                 # Model architecture
-│   ├── embeddings.py     # Tabular tokenization
-│   ├── tokenizer.py      # Full tokenization pipeline
-│   ├── backbone.py       # Transformer encoder
-│   ├── cross_world.py    # Inter-world attention
-│   ├── attention.py      # Attention primitives
-│   └── heads.py          # Prediction heads
-├── train/                 # Training system
-│   ├── losses.py         # Loss functions
-│   ├── trainer.py        # Training loop
-│   ├── metrics.py        # Evaluation metrics
-│   └── config.py         # Training config
-├── inference/             # Inference engine
-│   ├── engine.py         # Inference API
-│   ├── chunking.py       # Multi-intervention batching
-│   └── api.py            # Public interface
-└── experiments/           # Experiments
-    ├── ablations/        # Ablation studies
-    ├── baselines/        # Baseline comparisons
-    └── benchmarks/       # Synthetic benchmarks
+├── code/                   # Source code
+│   ├── scm/               # Synthetic SCM engine
+│   │   ├── schema.py      # Feature schema sampler
+│   │   ├── mechanisms.py  # Structural equation functions
+│   │   └── ...
+│   ├── episodes/          # Episode generation
+│   │   └── ...
+│   ├── model/             # Model architecture
+│   │   └── ...
+│   ├── train/             # Training system
+│   │   └── ...
+│   ├── inference/         # Inference API
+│   ├── experiments/       # Experiments
+│   │   └── ...
+│   ├── utils/             # Shared utilities
+│   ├── examples/          # Usage examples
+│   └── scripts/           # Run scripts
+├── data/                  # Data files
+├── doc/                   # Documentation
+└── test/                  # Tests
 ```
 
 ## Training
 
 **Single-GPU:**
 ```bash
-uv run python train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
+uv run python code/train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
 ```
 
 **Multi-GPU (DistributedDataParallel):** Use `torchrun` with `--nproc_per_node` equal to the number of GPUs. Each process uses one GPU; data is sharded across ranks. Checkpoints and logging are on rank 0 only.
 ```bash
-torchrun --nproc_per_node=2 train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
+torchrun --nproc_per_node=2 code/train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
 ```
-Single-GPU is the same script with one process: `torchrun --nproc_per_node=1 train_model.py ...`
+Single-GPU is the same script with one process: `torchrun --nproc_per_node=1 code/train_model.py ...`
 
 **Memory and curriculum:** Training uses a curriculum (more features and interventions in later stages). Attention memory scales as batch × worlds × sequence², so later stages can hit CUDA OOM. Two mitigations are applied by default: (1) **gradient checkpointing** is on (disable with `--no-gradient-checkpointing` if you have plenty of VRAM). (2) **Per-stage batch size** is reduced with a safety margin (e.g. stage 1 runs with per-GPU batch size 1 while accumulation keeps the effective batch large). If you still see OOM, try lowering `--batch-size` manually or set `PYTORCH_ALLOC_CONF=expandable_segments:True`.
+
+**Long-run curriculum (optional):** To spend more steps on harder stages (stage_2, stage_3) and potentially improve delta_correlation there, set `long_run_curriculum=True` in [train/config.py](code/train/config.py) or pass it when constructing `TrainingConfig` (e.g. in a custom training script). See [episodes/config.py](code/episodes/config.py) `get_long_run_curriculum()` and [doc/EVALUATION.md](doc/EVALUATION.md) for details.
+
+## Usage: when to use (and when not to)
+
+- **Use this model when:** You have (or can simulate) **many interventions** per unit, want **conditional effect estimates** (CATE-like) from tabular support + query, and your setting is **synthetic or SCM-like** or you accept a learned-prior interpretation. One forward pass gives baseline, interventional predictions, and deltas for all interventions. See [doc/PROJECT_REPORT.md](doc/PROJECT_REPORT.md) for the technical scope and [doc/EVALUATION.md](doc/EVALUATION.md) for reproduction and benchmarks.
+- **Do not rely on it when:** There is **no clear intervenability** (e.g. immutable covariates only), you need **guaranteed unit-level ITE** without SCM assumptions, or you use **out-of-family data** without caveats. The model is trained on synthetic SCMs; generalization to real data is not guaranteed.
+
+For architecture details, see [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
+
+**Single-call prediction:** From DataFrames and a checkpoint, use the helper in [code/inference/api.py](code/inference/api.py): `predict(support_df, query_df, interventions_list, checkpoint_path, device="cuda")`. See [code/examples/](code/examples/) for usage examples.
+
+## Reproduce results
+
+To run the full benchmark (IHDP + synthetic) with the best checkpoint by default:
+
+```bash
+PYTHONPATH=code uv run python scripts/run_full_benchmark.py --output-dir results
+```
+
+To find the best checkpoint on IHDP (PEHE): `PYTHONPATH=code uv run python scripts/eval_all_checkpoints_ihdp.py --checkpoint-dir checkpoints --output-dir results`.
+
+To reproduce the full test and evaluation suite (unit tests, checkpoint tests, eval matrix, comparison protocol, IHDP, ablations):
+
+```bash
+uv run python code/scripts/run_full_comparison.py
+```
+
+Results are written under `results/full_comparison_<timestamp>/`. Use `--quick` for a fast smoke run. Use `--checkpoint-tests` to run sanity checks per checkpoint, `--compare-all-checkpoints` for per-checkpoint comparison with significance, and `--stages all` for all curriculum stages. See [doc/EVALUATION.md](doc/EVALUATION.md) and [doc/REPRODUCE.md](doc/REPRODUCE.md).
 
 ## Evaluation
 
 ```bash
-python -m experiments.benchmarks.synthetic_suite --checkpoint checkpoints/model.pt
+python -m experiments.benchmarks.synthetic_suite --checkpoint checkpoints/model.pt  # run from project root
 ```
 
 ## Citation
