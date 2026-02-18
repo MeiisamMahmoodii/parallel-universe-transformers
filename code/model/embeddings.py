@@ -110,6 +110,9 @@ class FeatureIDEmbedding(nn.Module):
         Returns:
             Embeddings of shape [..., d_model].
         """
+        # Clamp indices so datasets with d > max_features still work (extra features reuse last embedding)
+        max_idx = self.embedding.num_embeddings - 1
+        feature_ids = torch.clamp(feature_ids, 0, max_idx)
         return self.embedding(feature_ids)
 
 

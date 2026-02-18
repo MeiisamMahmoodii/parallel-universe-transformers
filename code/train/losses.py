@@ -182,18 +182,21 @@ class LossComputer:
         self,
         lambda_delta: float = 1.0,
         use_quantiles: bool = False,
-        quantile_levels: list = None
+        quantile_levels: list = None,
+        lambda_quantile: float = 0.1,
     ):
         """Initialize loss computer.
-        
+
         Args:
             lambda_delta: Weight for delta loss.
             use_quantiles: Whether to use quantile loss.
             quantile_levels: Quantile levels (e.g., [0.1, 0.25, 0.5, 0.75, 0.9]).
+            lambda_quantile: Weight for quantile loss when use_quantiles=True (default 0.1).
         """
         self.lambda_delta = lambda_delta
         self.use_quantiles = use_quantiles
-        
+        self.lambda_quantile = lambda_quantile
+
         if quantile_levels is None:
             quantile_levels = [0.1, 0.25, 0.5, 0.75, 0.9]
         self.quantile_levels = torch.tensor(quantile_levels)
@@ -233,6 +236,6 @@ class LossComputer:
             self.quantile_levels = self.quantile_levels.to(quantiles.device)
             loss_quantile = quantile_loss(quantiles, targets, self.quantile_levels)
             losses['quantile'] = loss_quantile
-            losses['total'] = losses['total'] + 0.1 * loss_quantile  # Small weight
+            losses['total'] = losses['total'] + self.lambda_quantile * loss_quantile
         
         return losses

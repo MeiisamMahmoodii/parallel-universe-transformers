@@ -3,10 +3,14 @@
 Uses TabPFNRegressor to fit T=0 and T=1 models.
 """
 
+import os
 import torch
 import numpy as np
 from typing import Dict, Optional
 import warnings
+
+# Allow TabPFN to run on CPU with >1000 samples (e.g. Twins, ACIC)
+os.environ.setdefault("TABPFN_ALLOW_CPU_LARGE_DATASET", "1")
 
 try:
     from tabpfn import TabPFNRegressor
@@ -93,7 +97,7 @@ class TabPFNTBaseline:
                         X_w = X_w[indices]
                         Y_w = Y_w[indices]
                         
-                    model = TabPFNRegressor(device='cpu')
+                    model = TabPFNRegressor(device='cpu', ignore_pretraining_limits=True)
                     model.fit(X_w, Y_w)
                     models[w_idx] = model
             

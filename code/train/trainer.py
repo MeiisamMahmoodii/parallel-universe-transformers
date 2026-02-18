@@ -127,8 +127,11 @@ class Trainer:
         self.global_step = 0
         self.current_epoch = 0
         
-        # EMA loss for smoother progress bar display
+        # EMA loss for smoother progress bar display (legacy; we prefer running avg for consistency)
         self._ema_loss = None
+        # Running epoch average (matches epoch summary line; avoids EMA vs true-avg confusion)
+        self._epoch_losses_sum: Dict[str, float] = {}
+        self._epoch_batches: int = 0
         # Last eval metrics (shown on bar until next eval)
         self._last_eval_metrics: Optional[dict] = None
         
@@ -230,8 +233,16 @@ class Trainer:
         return {k: v.item() for k, v in losses.items()}
     
     def _progress_postfix(self) -> Dict[str, Any]:
-        """Build postfix dict for progress bar: train losses + last eval metrics."""
-        postfix = dict(self._ema_loss) if self._ema_loss else {}
+        """Build postfix dict for progress bar: train losses (running epoch avg) + last eval metrics.
+
+        Uses running epoch average (not EMA) so the progress bar matches the epoch summary line.
+        """
+        postfix: Dict[str, Any] = {}
+        if self._epoch_batches > 0 and self._epoch_losses_sum:
+            for k, v in self._epoch_losses_sum.items():
+                postfix[k] = round(float(v) / self._epoch_batches, 4)
+        elif self._ema_loss:
+            postfix = dict(self._ema_loss)
         if self._last_eval_metrics:
             for k, v in self._last_eval_metrics.items():
                 if v is not None and isinstance(v, (int, float)) and v == v:  # finite
@@ -272,8 +283,12 @@ class Trainer:
 
         Uses Rich progress (preferred) to avoid overwriting previous epochs in the terminal, and prints
         a persistent per-epoch summary line for easy comparison. Falls back to tqdm if Rich is absent.
+        Progress bar shows running epoch average (not EMA) so it matches the epoch summary line.
         """
         self.model.train()
+        # Reset running epoch accumulators (used for progress bar to match epoch summary)
+        self._epoch_losses_sum = {}
+        self._epoch_batches = 0
         # Rolling window (for log_every)
         log_losses_sum: Dict[str, float] = {}
         log_batches = 0
@@ -305,8 +320,10 @@ class Trainer:
             for k, v in losses.items():
                 log_losses_sum[k] = log_losses_sum.get(k, 0.0) + float(v)
                 epoch_losses_sum[k] = epoch_losses_sum.get(k, 0.0) + float(v)
+                self._epoch_losses_sum[k] = self._epoch_losses_sum.get(k, 0.0) + float(v)
             log_batches += 1
             epoch_batches += 1
+            self._epoch_batches = epoch_batches
 
             # Gradient accumulation
             if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:

@@ -42,20 +42,53 @@ def download_ihdp(data_dir: Path, count: int = 3) -> list:
     return downloaded
 
 
+def generate_synthetic_acic(data_dir: Path, n_samples: int = 4802, n_covariates: int = 58, seed: int = 42) -> bool:
+    """Generate ACIC-style synthetic data when causallib is unavailable.
+    ACIC 2016: 58 covariates, binary treatment, continuous outcome, mu0/mu1 for PEHE.
+    """
+    import numpy as np
+    import pandas as pd
+
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.RandomState(seed)
+    X = rng.randn(n_samples, n_covariates).astype(np.float32)
+    z = (rng.rand(n_samples) < 0.5).astype(np.float32)
+    beta0 = rng.randn(n_covariates).astype(np.float32) * 0.2
+    beta1 = rng.randn(n_covariates).astype(np.float32) * 0.2
+    offset = 0.5
+    mu0 = X @ beta0
+    mu1 = X @ beta1 + offset
+    eps = rng.randn(n_samples).astype(np.float32) * 0.5
+    y0 = mu0 + eps
+    y1 = mu1 + eps
+    y = (1 - z) * y0 + z * y1
+    cols = [f"x{i}" for i in range(1, n_covariates + 1)]
+    df = pd.DataFrame(X, columns=cols)
+    df["z"] = z
+    df["y"] = y
+    df["mu0"] = mu0
+    df["mu1"] = mu1
+    out_path = data_dir / "acic_sample.csv"
+    df.to_csv(out_path, index=False)
+    print(f"  ACIC sample (synthetic) -> {out_path}")
+    return True
+
+
 def try_download_acic(data_dir: Path) -> bool:
-    """If causallib is available, generate one ACIC instance and save as CSV."""
+    """If causallib is available, generate one ACIC instance. Else generate synthetic ACIC-style data."""
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     try:
         from causallib.datasets import load_acic16
     except ImportError:
-        print("  ACIC: causallib not installed. pip install causallib to generate data/acic_sample.csv")
-        return False
+        print("  ACIC: causallib not installed. Generating synthetic ACIC-style data.")
+        return generate_synthetic_acic(data_dir)
     try:
         data = load_acic16(instance=1)
+        import pandas as pd
         # causallib may return dict with X, z, y, mu0, mu1 etc.
         if isinstance(data, dict):
-            import pandas as pd
             X = data.get("X") if "X" in data else data.get("x")
             z = data.get("z") if "z" in data else data.get("treatment")
             y = data.get("y")
@@ -73,16 +106,17 @@ def try_download_acic(data_dir: Path) -> bool:
                     df["mu1"] = mu1
                 out_path = data_dir / "acic_sample.csv"
                 df.to_csv(out_path, index=False)
-                print(f"  ACIC sample -> {out_path}")
+                print(f"  ACIC sample (causallib) -> {out_path}")
                 return True
         # Fallback: try to get a DataFrame
         if hasattr(data, "to_csv"):
             out_path = data_dir / "acic_sample.csv"
             data.to_csv(out_path, index=False)
-            print(f"  ACIC sample -> {out_path}")
+            print(f"  ACIC sample (causallib) -> {out_path}")
             return True
     except Exception as e:
-        print(f"  ACIC: failed to generate sample: {e}", file=sys.stderr)
+        print(f"  ACIC: causallib failed ({e}), generating synthetic ACIC-style data.", file=sys.stderr)
+        return generate_synthetic_acic(data_dir)
     return False
 
 

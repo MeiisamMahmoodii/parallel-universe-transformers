@@ -24,13 +24,14 @@ import pandas as pd
 class SyntheticBenchmark:
     """Benchmark suite with diverse SCM families."""
     
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, device: str = "cuda"):
         """Initialize benchmark.
         
         Args:
             model_path: Path to trained model checkpoint.
+            device: Device to run on (cuda or cpu).
         """
-        self.model = ParallelUniverseModel.from_pretrained(model_path)
+        self.model = ParallelUniverseModel.from_pretrained(model_path, device=device)
         self.metrics_computer = MetricsComputer()
     
     def generate_test_scm(

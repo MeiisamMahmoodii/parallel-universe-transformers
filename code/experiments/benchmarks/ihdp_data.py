@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Tuple, Optional, List
 import urllib.request
 
+from experiments.benchmarks.split_utils import get_benchmark_indices
+
 
 # Default URL for one IHDP replication (CEVAE-style CSV if available)
 IHDP_SAMPLE_URL = (
@@ -86,15 +88,11 @@ def load_ihdp_csv(
     # Treatment as feature (append column)
     X_with_t = np.hstack([X, t.reshape(-1, 1)])
 
-    rng = np.random.default_rng(seed)
     n = len(X)
-    idx = rng.permutation(n)
-    n_train = max(1, int(n * train_frac))
-    train_idx = idx[:n_train]
-    test_idx = idx[n_train:]
+    train_val_idx, test_idx = get_benchmark_indices(n, seed=seed, test_frac=1.0 - train_frac)
 
-    support_x = X_with_t[train_idx]
-    support_y = y[train_idx]
+    support_x = X_with_t[train_val_idx]
+    support_y = y[train_val_idx]
 
     X_test = X[test_idx]
     t_test = t[test_idx]

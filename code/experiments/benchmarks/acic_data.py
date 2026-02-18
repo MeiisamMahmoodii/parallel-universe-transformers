@@ -29,26 +29,15 @@ def load_acic_directory(
         support_x, support_y, query_x_w0, query_x_w1, query_y0, query_y1, feature_names, has_potential_outcomes
     """
     data_dir = Path(data_dir)
-    x_path = data_dir / "x.csv"
-    if not x_path.exists():
-        raise FileNotFoundError(f"x.csv not found in {data_dir}")
-    x_df = pd.read_csv(x_path)
-    # Find zymu file
     if zymu_file:
-        zymu_path = data_dir / zymu_file
+        x_df = pd.read_csv(data_dir / "x.csv")
+        zymu_df = pd.read_csv(data_dir / zymu_file)
+        df = x_df.copy()
+        for c in ["z", "y", "mu0", "mu1"]:
+            if c in zymu_df.columns:
+                df[c] = zymu_df[c].values
     else:
-        zymu_files = sorted(data_dir.glob("zymu_*.csv"))
-        if not zymu_files:
-            raise FileNotFoundError(f"No zymu_*.csv in {data_dir}")
-        zymu_path = zymu_files[0]
-    zymu_df = pd.read_csv(zymu_path)
-    if len(x_df) != len(zymu_df):
-        raise ValueError(f"Row count mismatch: x.csv {len(x_df)} vs {zymu_path.name} {len(zymu_df)}")
-    # Merge by index (same row order)
-    df = x_df.copy()
-    for c in ["z", "y", "mu0", "mu1"]:
-        if c in zymu_df.columns:
-            df[c] = zymu_df[c].values
+        df = _load_acic_to_df(data_dir)
     if "z" not in df.columns or "y" not in df.columns:
         raise ValueError("zymu file must have 'z' and 'y' columns")
     return load_acic_csv(df, train_frac=train_frac, seed=seed)
@@ -90,6 +79,41 @@ def load_acic_csv(
         os.unlink(tmp)
     has_potential = np.any(query_y0 != 0) or np.any(query_y1 != 0)
     return support_x, support_y, query_x_w0, query_x_w1, query_y0, query_y1, feature_names, has_potential
+
+
+def load_acic_arrays(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    """Load ACIC raw arrays (X, t, y, y0, y1, feature_names) without splitting."""
+    path = Path(path)
+    if path.is_dir():
+        df = _load_acic_to_df(path)
+    else:
+        df = pd.read_csv(path)
+    skip = {"z", "y", "mu0", "mu1"}
+    cov_cols = [c for c in df.columns if c not in skip and np.issubdtype(df[c].dtype, np.number)]
+    if not cov_cols:
+        cov_cols = [c for c in df.columns if c not in skip]
+    cov_cols = sorted(cov_cols, key=lambda x: (len(str(x)), str(x)))
+    X = df[cov_cols].values.astype(np.float32)
+    t = df["z"].values.astype(np.float32)
+    y = df["y"].values.astype(np.float32)
+    y0 = df["mu0"].values.astype(np.float32) if "mu0" in df.columns else np.zeros(len(y), dtype=np.float32)
+    y1 = df["mu1"].values.astype(np.float32) if "mu1" in df.columns else np.zeros(len(y), dtype=np.float32)
+    feature_names = cov_cols + ["z"]
+    return X, t, y, y0, y1, feature_names
+
+
+def _load_acic_to_df(data_dir: Path) -> pd.DataFrame:
+    """Load ACIC directory into a DataFrame."""
+    x_df = pd.read_csv(data_dir / "x.csv")
+    zymu_files = sorted(data_dir.glob("zymu_*.csv"))
+    if not zymu_files:
+        raise FileNotFoundError(f"No zymu_*.csv in {data_dir}")
+    zymu_df = pd.read_csv(zymu_files[0])
+    df = x_df.copy()
+    for c in ["z", "y", "mu0", "mu1"]:
+        if c in zymu_df.columns:
+            df[c] = zymu_df[c].values
+    return df
 
 
 def load_acic(

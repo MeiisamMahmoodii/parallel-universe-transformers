@@ -204,19 +204,23 @@ class ParallelUniverseTransformer(nn.Module):
         # Initialize intervention operator
         intv_op = InterventionOperator()
         
-        # Process interventions in chunks
-        all_predictions = []
-        all_log_vars = []
+        # Process interventions in chunks. Each chunk forward returns [Baseline, Intv_1, ..., Intv_k].
+        # We must take baseline only from the first chunk and only counterfactuals from the rest,
+        # then concatenate, so the result is [Baseline, Intv_1, ..., Intv_K] with no duplicate baselines.
+        all_cf_predictions = []
+        all_cf_log_vars = []
         all_deltas = []
-        
+        baseline_pred = None
+        baseline_log_var = None
+
         for i in range(0, len(interventions), chunk_size):
             chunk_interventions = interventions[i:i + chunk_size]
             W_chunk = len(chunk_interventions) + 1  # +1 for baseline
-            
+
             # Build query_x for this chunk
             query_x_chunk = torch.zeros(B, W_chunk, Nq, d, device=device)
             query_x_chunk[:, 0, :, :] = query_x_baseline  # Baseline
-            
+
             for j, intervention in enumerate(chunk_interventions):
                 # Apply intervention
                 query_x_intv = intv_op.apply(
@@ -224,23 +228,28 @@ class ParallelUniverseTransformer(nn.Module):
                     intervention
                 )
                 query_x_chunk[:, j + 1, :, :] = torch.from_numpy(query_x_intv).to(device)
-            
+
             # Forward pass
             outputs = self.forward(
                 support_x, support_y, query_x_chunk,
                 feature_types, cardinalities,
                 support_mask, None
             )
-            
-            all_predictions.append(outputs['prediction'])
-            all_log_vars.append(outputs['log_var'])
+
+            # First chunk: keep baseline; all chunks: keep only counterfactuals (strip index 0)
+            if baseline_pred is None:
+                baseline_pred = outputs['prediction'][:, 0:1, :]   # [B, 1, Nq]
+                baseline_log_var = outputs['log_var'][:, 0:1, :]
+            all_cf_predictions.append(outputs['prediction'][:, 1:, :])
+            all_cf_log_vars.append(outputs['log_var'][:, 1:, :])
             all_deltas.append(outputs['deltas'])
-        
-        # Concatenate results
-        predictions = torch.cat(all_predictions, dim=1)  # [B, 1+K, Nq]
-        log_vars = torch.cat(all_log_vars, dim=1)
+
+        # Single baseline + all counterfactuals in order
+        counterfactuals = torch.cat(all_cf_predictions, dim=1)  # [B, K, Nq]
+        predictions = torch.cat([baseline_pred, counterfactuals], dim=1)  # [B, 1+K, Nq]
+        log_vars = torch.cat([baseline_log_var, torch.cat(all_cf_log_vars, dim=1)], dim=1)
         deltas = torch.cat(all_deltas, dim=1)
-        
+
         return {
             'baseline': predictions[:, 0, :],
             'counterfactuals': predictions[:, 1:, :],
