@@ -1,0 +1,16 @@
+{
+  "name": "exp_08_synthetic_ihdp_mix",
+  "description": "Use synthetic-mix-ratio 0.3 with IHDP-only",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 1500,
+    "lr": 1e-5,
+    "weight_decay": 0.1,
+    "datasets": ["ihdp"],
+    "synthetic_mix_ratio": 0.3
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "exp_07_ihdp_heavy_mix",
+  "description": "mix_ratio [0.6, 0.2, 0.2] (more IHDP)",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 1000,
+    "lr": 5e-6,
+    "weight_decay": 0.1,
+    "datasets": ["ihdp", "acic", "twins"],
+    "mix_ratio": [0.6, 0.2, 0.2],
+    "acic_data": "data/acic_sample.csv"
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}

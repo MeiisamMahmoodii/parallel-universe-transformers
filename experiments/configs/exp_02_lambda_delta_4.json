@@ -1,0 +1,18 @@
+{
+  "name": "exp_02_lambda_delta_4",
+  "description": "lambda_delta=4.0 instead of 2.0",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 1000,
+    "lr": 5e-6,
+    "weight_decay": 0.1,
+    "datasets": ["ihdp", "acic", "twins"],
+    "mix_ratio": [0.5, 0.25, 0.25],
+    "acic_data": "data/acic_sample.csv",
+    "lambda_delta": 4.0
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}

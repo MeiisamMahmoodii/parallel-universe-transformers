@@ -1,0 +1,16 @@
+{
+  "name": "exp_13_ihdp_outcome_norm",
+  "description": "Outcome normalization (StandardScaler on support Y) for IHDP",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 1500,
+    "lr": 1e-5,
+    "weight_decay": 0.1,
+    "datasets": ["ihdp"],
+    "scale_outcome": true
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}

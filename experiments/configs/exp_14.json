@@ -1,0 +1,1 @@
+{"name":"exp_14_ihdp_longer","description":"Longer finetuning: max_steps=6000, weight_decay=0.01 (same as exp_10 but 2x steps)","finetune":{"resume_from":"checkpoints/checkpoint_step_40000.pt","max_steps":6000,"lr":0.00001,"weight_decay":0.01,"datasets":["ihdp"]},"eval":{"seeds":[42,123,456],"max_samples":500}}

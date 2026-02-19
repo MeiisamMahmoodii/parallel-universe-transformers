@@ -1,0 +1,15 @@
+{
+  "name": "exp_03_ihdp_only",
+  "description": "Single dataset IHDP, 1500 steps, lr=1e-5",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 1500,
+    "lr": 1e-5,
+    "weight_decay": 0.1,
+    "datasets": ["ihdp"]
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}

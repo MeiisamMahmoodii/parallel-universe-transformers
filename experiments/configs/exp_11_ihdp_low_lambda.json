@@ -1,0 +1,16 @@
+{
+  "name": "exp_11_ihdp_low_lambda",
+  "description": "Weaker delta penalty: lambda_delta=1.0",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 1500,
+    "lr": 1e-5,
+    "weight_decay": 0.1,
+    "datasets": ["ihdp"],
+    "lambda_delta": 1.0
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}

@@ -1,0 +1,1 @@
+{"name":"exp_15_ihdp_cosine_lr","description":"Cosine LR schedule (Trainer default): max_steps=4000, weight_decay=0.01","finetune":{"resume_from":"checkpoints/checkpoint_step_40000.pt","max_steps":4000,"lr":0.00001,"weight_decay":0.01,"datasets":["ihdp"]},"eval":{"seeds":[42,123,456],"max_samples":500}}

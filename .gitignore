@@ -51,6 +51,7 @@ results/
 experiments/results/
 *.json
 !**/config/*.json
+!experiments/configs/*.json
 
 # OS
 .DS_Store

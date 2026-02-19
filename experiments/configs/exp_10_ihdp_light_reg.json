@@ -1,0 +1,15 @@
+{
+  "name": "exp_10_ihdp_light_reg",
+  "description": "Lighter regularization: weight_decay=0.01, 3000 steps",
+  "finetune": {
+    "resume_from": "checkpoints/checkpoint_step_40000.pt",
+    "max_steps": 3000,
+    "lr": 1e-5,
+    "weight_decay": 0.01,
+    "datasets": ["ihdp"]
+  },
+  "eval": {
+    "seeds": [42, 123, 456],
+    "max_samples": 500
+  }
+}
