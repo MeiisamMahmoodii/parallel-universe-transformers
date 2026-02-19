@@ -18,9 +18,22 @@ from pathlib import Path
 from typing import Optional
 
 
-def find_config(exp_id: str) -> Optional[Path]:
+def get_configs_dir() -> Path:
+    """Configs dir: prefer repo root (cwd) so all exp_*.json are found when run from repo."""
+    script_dir = Path(__file__).resolve().parent
+    script_configs = script_dir / "configs"
+    repo_root = script_dir.parent
+    for base in [Path.cwd(), repo_root]:
+        d = base / "experiments" / "configs"
+        if d.exists() and list(d.glob("exp_*.json")):
+            return d
+    return script_configs
+
+
+def find_config(exp_id: str, configs_dir: Optional[Path] = None) -> Optional[Path]:
     """Find config by prefix (exp_01 or exp_01_baseline)."""
-    configs_dir = Path(__file__).resolve().parent / "configs"
+    if configs_dir is None:
+        configs_dir = get_configs_dir()
     if not configs_dir.exists():
         return None
     exp_lower = exp_id.lower()
@@ -51,11 +64,13 @@ def main():
 
     repo_root = Path(__file__).resolve().parents[1]
     code_dir = repo_root / "code"
-    config_path = find_config(args.exp_id)
+    configs_dir = get_configs_dir()
+    config_path = find_config(args.exp_id, configs_dir)
 
     if config_path is None:
         print(f"Error: No config found for '{args.exp_id}'")
-        print("Available configs:", [p.stem for p in (Path(__file__).parent / "configs").glob("exp_*.json")])
+        print("Searched in:", configs_dir)
+        print("Available configs:", sorted(p.stem for p in configs_dir.glob("exp_*.json")))
         return 1
 
     with open(config_path) as f:
