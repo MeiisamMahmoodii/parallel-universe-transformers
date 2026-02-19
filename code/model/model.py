@@ -6,7 +6,7 @@ from typing import Optional, Dict, List
 
 from .tokenizer import TabularTokenizer
 from .backbone import TransformerEncoder
-from .heads import CombinedHead
+from .heads import CombinedHead, DeltaHead
 
 
 class ParallelUniverseTransformer(nn.Module):
@@ -81,6 +81,7 @@ class ParallelUniverseTransformer(nn.Module):
             use_quantiles=use_quantiles,
             n_quantiles=n_quantiles
         )
+        self.delta_head = DeltaHead(d_model=d_model, hidden_dim=128, dropout=dropout)
     
     def forward(
         self,
@@ -154,9 +155,11 @@ class ParallelUniverseTransformer(nn.Module):
         prediction = outputs['prediction'].squeeze(-1).view(B, W, Nq)
         log_var = outputs['log_var'].squeeze(-1).view(B, W, Nq)
         
-        # Compute deltas (intervention - baseline)
-        baseline_pred = prediction[:, 0:1, :]  # [B, 1, Nq]
-        deltas = prediction[:, 1:, :] - baseline_pred  # [B, W-1, Nq]
+        # Explicit delta head: baseline vs intervention hidden states -> effect estimates
+        y_hidden_worlds = y_hidden.view(B, W, Nq, self.d_model)
+        baseline_hidden = y_hidden_worlds[:, 0, :, :]       # [B, Nq, d_model]
+        intervention_hidden = y_hidden_worlds[:, 1:, :, :]  # [B, W-1, Nq, d_model]
+        deltas = self.delta_head(baseline_hidden, intervention_hidden)  # [B, W-1, Nq]
         
         result = {
             'prediction': prediction,

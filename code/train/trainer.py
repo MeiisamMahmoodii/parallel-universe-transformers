@@ -119,6 +119,7 @@ class Trainer:
         # Loss and metrics
         self.loss_computer = LossComputer(
             lambda_delta=config.lambda_delta,
+            lambda_cal=getattr(config, "lambda_cal", 0.1),
             use_quantiles=config.use_quantiles
         )
         self.metrics_computer = MetricsComputer()
@@ -564,7 +565,7 @@ class Trainer:
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         model_state = checkpoint['model_state_dict']
         target = self.model.module if self._is_ddp else self.model
-        target.load_state_dict(model_state)
+        target.load_state_dict(model_state, strict=False)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.global_step = checkpoint['global_step']

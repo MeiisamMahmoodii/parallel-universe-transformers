@@ -33,5 +33,5 @@ def load_model_from_checkpoint(
         attend_to_all_worlds=config.get("attend_to_all_worlds", True),
         use_quantiles=config.get("use_quantiles", False),
     )
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     return model.to(device).eval()

@@ -12,15 +12,16 @@ Parallel Universe Transformers: a black-box meta-learner for causal effect estim
 ### 2. Episode Pipeline (`episodes/`)
 - `config.py`: Curriculum (4 stages), `packer.py`: tensor packing, `dataset.py`: IterableDataset
 - Support/query format with parallel worlds (baseline + K interventions)
+- **Per-episode input normalization**: Continuous features are z-scored per episode (support stats applied to support and all query worlds); toggle via `CurriculumStage.normalize_continuous`
 
 ### 3. Model (`model/`)
 - `tokenizer.py`: Tabular tokenization (continuous: MLP+Fourier, categorical: embeddings)
 - `backbone.py`: Transformer encoder with cross-world attention at layers 3, 5
-- `heads.py`: Prediction + uncertainty (Gaussian NLL, optional quantiles)
+- `heads.py`: Prediction + uncertainty (Gaussian NLL, optional quantiles) + **explicit delta head** (effect from baseline vs intervention hidden states)
 - Default: d_model=256, 6 layers, 8 heads
 
 ### 4. Training (`train/`)
-- `losses.py`: Gaussian NLL + delta consistency
+- `losses.py`: Gaussian NLL + delta consistency (from outcome head or explicit delta head) + **calibration loss** (location + scale of deltas)
 - `metrics.py`: Baseline, CF, delta, ATE, calibration
 - `trainer.py`: Curriculum, mixed precision, gradient checkpointing
 
@@ -36,7 +37,8 @@ Parallel Universe Transformers: a black-box meta-learner for causal effect estim
 
 ## Key Design
 
-- **Loss**: L_total = L_pred + λ_delta * L_delta
+- **Loss**: L_total = L_pred + λ_delta * L_delta + λ_cal * L_cal (L_cal = calibration on deltas; config `lambda_cal`).
+- **Delta head**: Deltas are produced by an explicit `DeltaHead` (baseline vs intervention hidden states → effect); training uses these for L_delta and L_cal.
 - **World processing**: Fold into batch with world embeddings; cross-attend at layers 3, 5
 - **Curriculum**: 4 stages (warmup → basic → moderate → final)
 

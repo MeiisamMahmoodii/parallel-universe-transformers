@@ -31,6 +31,7 @@ class TrainingConfig:
     # Loss
     lambda_delta: float = 2.0
     lambda_delta_warmup_steps: int = 0  # 0 = no warmup; else ramp 0 -> lambda_delta over this many steps
+    lambda_cal: float = 0.1  # Weight for calibration loss (location + scale of deltas)
     use_quantiles: bool = False
     
     # Optimization

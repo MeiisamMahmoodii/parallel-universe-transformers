@@ -6,6 +6,30 @@ import torch
 from torch.utils.data import IterableDataset
 
 from scm.schema import FeatureSchema, SchemaConfig
+
+_EPS = 1e-8
+
+
+def _normalize_continuous_episode(
+    support_x: np.ndarray,
+    query_x_worlds: np.ndarray,
+    n_continuous: int,
+) -> tuple:
+    """Z-score continuous features per episode using support set stats.
+
+    First n_continuous columns are continuous; rest are unchanged.
+    Applied to both support and all query worlds for consistent scale.
+    """
+    if n_continuous <= 0:
+        return support_x, query_x_worlds
+    sup_cont = support_x[:, :n_continuous]
+    mean = np.mean(sup_cont, axis=0, keepdims=True)
+    std = np.std(sup_cont, axis=0, keepdims=True) + _EPS
+    support_x = support_x.copy()
+    support_x[:, :n_continuous] = (sup_cont - mean) / std
+    query_x_worlds = query_x_worlds.copy()
+    query_x_worlds[:, :, :n_continuous] = (query_x_worlds[:, :, :n_continuous] - mean) / std
+    return support_x, query_x_worlds
 from scm.sample import SCMSampler, SCMConfig
 from scm.intervene import InterventionOperator
 from scm.counterfactual import CounterfactualGenerator
@@ -132,6 +156,12 @@ class SCMEpisodeDataset(IterableDataset):
             )
             interventions_list = [interventions_list[j] for j in perm]
         interventions_with_baseline = [None] + interventions_list
+
+        # Per-episode normalization of continuous inputs (support stats, applied to support and all query worlds)
+        if getattr(self.stage, "normalize_continuous", True) and self.stage.n_continuous > 0:
+            support_x, query_x_worlds = _normalize_continuous_episode(
+                support_x, query_x_worlds, self.stage.n_continuous
+            )
 
         # Pack into episode
         episode = self.packer.pack_episode(

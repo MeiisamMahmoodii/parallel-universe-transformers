@@ -19,6 +19,7 @@ class CurriculumStage:
     noise_scale: float = 0.5
     min_steps: int = 10000  # Minimum steps before advancing
     shuffle_intervention_order: bool = True  # If True, randomize order of intervention worlds (1..K) per episode
+    normalize_continuous: bool = True  # If True, z-score continuous features per episode (support stats applied to support and query)
 
 
 @dataclass

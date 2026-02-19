@@ -122,6 +122,42 @@ class QuantileHead(nn.Module):
         return self.net(x)
 
 
+class DeltaHead(nn.Module):
+    """Explicit delta (effect) head: predicts intervention effect from baseline vs intervention representations."""
+
+    def __init__(self, d_model: int, hidden_dim: int = 128, dropout: float = 0.1):
+        super().__init__()
+        # Input: concat of baseline and intervention repr -> 2 * d_model
+        self.net = nn.Sequential(
+            nn.Linear(2 * d_model, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(
+        self,
+        baseline_hidden: torch.Tensor,
+        intervention_hidden: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict deltas (effect = intervention - baseline) per query.
+
+        Args:
+            baseline_hidden: [B, Nq, d_model] - baseline world query Y-token hidden states.
+            intervention_hidden: [B, W-1, Nq, d_model] - intervention worlds query Y-token hidden states.
+
+        Returns:
+            Deltas of shape [B, W-1, Nq].
+        """
+        B, Nq, d = baseline_hidden.shape
+        _, Wm1, _, _ = intervention_hidden.shape
+        # Expand baseline to match each intervention: [B, W-1, Nq, d_model]
+        base = baseline_hidden.unsqueeze(1).expand(B, Wm1, Nq, d)
+        concat = torch.cat([base, intervention_hidden], dim=-1)
+        out = self.net(concat).squeeze(-1)
+        return out
+
+
 class CombinedHead(nn.Module):
     """Combined prediction and uncertainty head."""
     

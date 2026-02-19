@@ -1,10 +1,12 @@
 # Training and Evaluation Guide
 
+**Run all commands with `PYTHONPATH=code`** so that Python imports resolve to the `code/` package (e.g. `PYTHONPATH=code uv run python ...`).
+
 ## 1. What Changed (Phase 1 & 2)
 
 ### Phase 1: Model Improvements
 
-- **Model chunking bug fix**: When K > chunk_size (8), the model now returns exactly K counterfactuals (was K+1). Fixed in `model/model.py` and root `model/model.py`.
+- **Model chunking bug fix**: When K > chunk_size (8), the model now returns exactly K counterfactuals (was K+1). Fixed in [code/model/model.py](code/model/model.py).
 - **Outcome normalization fix (exp_13)**: Eval scaler now fits on train (70%) only to match finetuning protocol; previously fit on train_val (80%), causing PEHE regression.
 - **New experiment configs**:
   - `exp_14_ihdp_longer.json`: max_steps=6000, weight_decay=0.01 (same as exp_10 but 2× steps)

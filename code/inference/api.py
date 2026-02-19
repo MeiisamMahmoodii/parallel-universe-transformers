@@ -115,8 +115,8 @@ class ParallelUniverseModel:
             use_quantiles=config.get('use_quantiles', False)
         )
         
-        # Load weights
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Load weights (strict=False for backward compatibility with checkpoints missing delta_head)
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         
         return cls(model, device)
     

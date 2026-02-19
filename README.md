@@ -38,13 +38,15 @@ uv sync
 uv sync --all-extras
 ```
 
+**Important:** All Python commands (training, evaluation, tests) must be run with **`PYTHONPATH=code`** so that imports resolve to the `code/` package. Example: `PYTHONPATH=code uv run python code/train_model.py`.
+
 **Common uv commands:**
 ```bash
 uv sync                    # Install dependencies (creates .venv, uses pyproject.toml)
 uv sync --all-extras       # Include dev + logging extras (pytest, wandb, etc.)
 uv lock                    # Generate uv.lock for reproducible installs
-uv run python script.py    # Run script in project environment
-uv run pytest test/        # Run tests
+PYTHONPATH=code uv run python script.py   # Run script (always set PYTHONPATH=code)
+PYTHONPATH=code uv run pytest test/       # Run tests
 ```
 
 With pip:
@@ -53,6 +55,8 @@ pip install -e ".[dev]"  # or pip install -e .
 ```
 
 ## Quick Start
+
+Run with `PYTHONPATH=code` so imports resolve to `code/`:
 
 ```python
 from inference.api import ParallelUniverseModel, Intervention
@@ -109,14 +113,14 @@ parallel-universe-transformers/
 
 **Single-GPU:**
 ```bash
-uv run python code/train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
+PYTHONPATH=code uv run python code/train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
 ```
 
 **Multi-GPU (DistributedDataParallel):** Use `torchrun` with `--nproc_per_node` equal to the number of GPUs. Each process uses one GPU; data is sharded across ranks. Checkpoints and logging are on rank 0 only.
 ```bash
-torchrun --nproc_per_node=2 code/train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
+PYTHONPATH=code torchrun --nproc_per_node=2 code/train_model.py --mixed-precision --batch-size 32 --gradient-accumulation 4 --max-steps 100000
 ```
-Single-GPU is the same script with one process: `torchrun --nproc_per_node=1 code/train_model.py ...`
+Single-GPU is the same script with one process: `PYTHONPATH=code torchrun --nproc_per_node=1 code/train_model.py ...`
 
 **Memory and curriculum:** Training uses a curriculum (more features and interventions in later stages). Attention memory scales as batch × worlds × sequence², so later stages can hit CUDA OOM. Two mitigations are applied by default: (1) **gradient checkpointing** is on (disable with `--no-gradient-checkpointing` if you have plenty of VRAM). (2) **Per-stage batch size** is reduced with a safety margin (e.g. stage 1 runs with per-GPU batch size 1 while accumulation keeps the effective batch large). If you still see OOM, try lowering `--batch-size` manually or set `PYTORCH_ALLOC_CONF=expandable_segments:True`.
 
@@ -144,7 +148,7 @@ To find the best checkpoint on IHDP (PEHE): `PYTHONPATH=code uv run python scrip
 To reproduce the full test and evaluation suite (unit tests, checkpoint tests, eval matrix, comparison protocol, IHDP, ablations):
 
 ```bash
-uv run python code/scripts/run_full_comparison.py
+PYTHONPATH=code uv run python code/scripts/run_full_comparison.py
 ```
 
 Results are written under `results/full_comparison_<timestamp>/`. Use `--quick` for a fast smoke run. Use `--checkpoint-tests` to run sanity checks per checkpoint, `--compare-all-checkpoints` for per-checkpoint comparison with significance, and `--stages all` for all curriculum stages. See [doc/EVALUATION.md](doc/EVALUATION.md) and [doc/REPRODUCE.md](doc/REPRODUCE.md).
@@ -152,7 +156,7 @@ Results are written under `results/full_comparison_<timestamp>/`. Use `--quick` 
 ## Evaluation
 
 ```bash
-python -m experiments.benchmarks.synthetic_suite --checkpoint checkpoints/model.pt  # run from project root
+PYTHONPATH=code uv run python -m experiments.benchmarks.synthetic_suite --checkpoint checkpoints/model.pt
 ```
 
 ## Citation
