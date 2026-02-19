@@ -204,10 +204,13 @@ class ParallelUniverseTransformer(nn.Module):
         # Initialize intervention operator
         intv_op = InterventionOperator()
         
-        # Process interventions in chunks
-        all_predictions = []
-        all_log_vars = []
+        # Process interventions in chunks. Each chunk forward returns [Baseline, Intv_1, ..., Intv_k].
+        # Take baseline only from first chunk; only counterfactuals from the rest.
+        all_cf_predictions = []
+        all_cf_log_vars = []
         all_deltas = []
+        baseline_pred = None
+        baseline_log_var = None
         
         for i in range(0, len(interventions), chunk_size):
             chunk_interventions = interventions[i:i + chunk_size]
@@ -232,19 +235,31 @@ class ParallelUniverseTransformer(nn.Module):
                 support_mask, None
             )
             
-            all_predictions.append(outputs['prediction'])
-            all_log_vars.append(outputs['log_var'])
+            # First chunk: keep baseline; all chunks: keep only counterfactuals (strip index 0)
+            cf_chunk = outputs['prediction'][:, 1:, :]  # [B, W_chunk-1, Nq]
+            if baseline_pred is None:
+                baseline_pred = outputs['prediction'][:, 0:1, :]
+                baseline_log_var = outputs['log_var'][:, 0:1, :]
+            all_cf_predictions.append(cf_chunk)
+            all_cf_log_vars.append(outputs['log_var'][:, 1:, :])
             all_deltas.append(outputs['deltas'])
         
-        # Concatenate results
-        predictions = torch.cat(all_predictions, dim=1)  # [B, 1+K, Nq]
-        log_vars = torch.cat(all_log_vars, dim=1)
+        # Single baseline + all counterfactuals in order
+        counterfactuals = torch.cat(all_cf_predictions, dim=1)  # [B, K, Nq]
+        predictions = torch.cat([baseline_pred, counterfactuals], dim=1)  # [B, 1+K, Nq]
+        log_vars = torch.cat([baseline_log_var, torch.cat(all_cf_log_vars, dim=1)], dim=1)
         deltas = torch.cat(all_deltas, dim=1)
+        
+        K = len(interventions)
+        ret_cf = predictions[:, 1:, :]
+        if ret_cf.shape[1] != K:
+            ret_cf = ret_cf[:, :K, :]
+        ret_deltas = deltas[:, :K, :] if deltas.shape[1] != K else deltas
         
         return {
             'baseline': predictions[:, 0, :],
-            'counterfactuals': predictions[:, 1:, :],
-            'deltas': deltas,
+            'counterfactuals': ret_cf,
+            'deltas': ret_deltas,
             'log_var': log_vars,
             'uncertainty': torch.exp(0.5 * log_vars)  # Standard deviation
         }

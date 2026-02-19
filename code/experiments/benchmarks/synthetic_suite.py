@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
+import warnings
 
 # Add code directory to path (repo root = parents[3] from code/experiments/benchmarks/)
 _root = Path(__file__).resolve().parents[3]
@@ -179,6 +180,11 @@ class SyntheticBenchmark:
         
         deltas_pred = results.deltas
         deltas_true = cf_true - baseline_true[None, :]
+        
+        n_intv = len(interventions)
+        assert cf_true.shape[0] == n_intv, f"Ground truth has {cf_true.shape[0]} interventions, expected {n_intv}"
+        assert cf_pred.shape[0] == n_intv, f"Model returned {cf_pred.shape[0]} counterfactuals, expected {n_intv}"
+        assert deltas_pred.shape[0] == n_intv, f"Model returned {deltas_pred.shape[0]} deltas, expected {n_intv}"
         
         # Compute errors
         baseline_rmse = np.sqrt(np.mean((baseline_pred - baseline_true) ** 2))

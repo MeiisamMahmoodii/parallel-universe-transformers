@@ -37,7 +37,7 @@ from experiments.baselines.causalpfn_baseline import CausalPFNBaseline
 from episodes.ihdp_episode_dataset import scale_covariates
 from experiments.benchmarks.twins_data import load_twins
 from experiments.benchmarks.acic_data import load_acic
-from experiments.benchmarks.split_utils import get_benchmark_indices
+from experiments.benchmarks.split_utils import get_benchmark_indices, get_finetune_indices
 
 class IHDPDataset:
     """Loader for IHDP dataset."""
@@ -142,9 +142,14 @@ class RealWorldBenchmark:
         support_y = y_train
         scaler = None
         if scale_outcome_for_ours:
+            # Scaler must be fit on train (70%) only to match finetuning protocol.
+            # Finetuning uses get_finetune_indices: train=70%, val=10%, test=20%.
+            # Model was trained with scaler fit on train Y only.
             from sklearn.preprocessing import StandardScaler
+            train_idx, _, _ = get_finetune_indices(n_samples, seed=seed, train_frac=0.7, val_frac=0.1, test_frac=0.2)
+            y_train_for_scaler = y[train_idx]
             scaler = StandardScaler()
-            scaler.fit(support_y.reshape(-1, 1))
+            scaler.fit(y_train_for_scaler.reshape(-1, 1))
 
         # Query X needs T=0 and T=1
         x_test_0 = np.hstack([x_test, np.zeros((len(x_test), 1))])

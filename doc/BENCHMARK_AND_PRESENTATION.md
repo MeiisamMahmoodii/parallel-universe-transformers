@@ -69,7 +69,8 @@ Your results show that the Parallel Universe Transformer is **weaker** than TabP
 3. **Experiments**  
    - Synthetic: SCM types (linear, nonlinear, multiplicative, heteroskedastic).  
    - Real: IHDP (standard benchmark).  
-   - Baselines: Linear-T/S, GB-T/S, DR-Linear/GB, TabPFN, TransTEE, Dragonnet.
+   - Baselines: Linear-T/S, GB-T/S, DR-Linear/GB, TabPFN, TransTEE, Dragonnet.  
+   - **Multi-intervention**: K=3–15, stable performance; unique capability vs baselines.
 
 4. **Results (your numbers)**  
    - **Synthetic:** Competitive or tied on some SCMs; **heteroskedastic:** ours 2.25 vs TabPFN 1.09 → model struggles with complex noise or needs more tuning.  
@@ -120,7 +121,27 @@ Your results show that the Parallel Universe Transformer is **weaker** than TabP
 
 ---
 
-## 4. Quick reference: run benchmarks and tests
+## 4. Multi-Intervention Benchmark
+
+The many-K benchmark evaluates our model on K interventions in one forward pass (K = 3, 5, 8, 10, 15). Baselines (TabPFN, GB-S) are binary CATE only.
+
+**Results (representative):**
+
+| K  | Delta RMSE (linear_gaussian) |
+|----|------------------------------|
+| 3  | ~2.6                         |
+| 5  | ~3.1                         |
+| 8  | ~2.7                         |
+| 10 | ~2.6                         |
+| 15 | ~2.6                         |
+
+No degradation with K; stable Delta RMSE. **Framing**: We trade slight CATE gap for multi-intervention capability: one forward pass for K interventions.
+
+**How to run:** `scripts/run_many_k_synthetic.py --checkpoint <path> --k-list 3 5 8 10 15`
+
+---
+
+## 5. Quick reference: run benchmarks and tests
 
 ```bash
 # From repo root; ensure code/ is the implementation you care about

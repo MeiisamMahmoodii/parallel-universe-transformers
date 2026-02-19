@@ -27,7 +27,7 @@ import torch
 
 def main():
     parser = argparse.ArgumentParser(description="Run full benchmark suite (IHDP, ACIC, Twins, Synthetic)")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/checkpoint_step_40000.pt", help="Path to our model .pt")
+    parser.add_argument("--checkpoint", type=str, default="experiments/results/exp_10_ihdp_light_reg/checkpoints/finetuned_seed42.pt", help="Path to our model .pt")
     parser.add_argument("--output-dir", type=str, default="results", help="Directory for result JSONs")
     parser.add_argument("--device", type=str, default=None, help="Device: cuda, cpu, or auto (default: cuda if available else cpu)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for train/test splits")

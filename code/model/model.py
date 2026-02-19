@@ -237,10 +237,11 @@ class ParallelUniverseTransformer(nn.Module):
             )
 
             # First chunk: keep baseline; all chunks: keep only counterfactuals (strip index 0)
+            cf_chunk = outputs['prediction'][:, 1:, :]  # [B, W_chunk-1, Nq]
             if baseline_pred is None:
                 baseline_pred = outputs['prediction'][:, 0:1, :]   # [B, 1, Nq]
                 baseline_log_var = outputs['log_var'][:, 0:1, :]
-            all_cf_predictions.append(outputs['prediction'][:, 1:, :])
+            all_cf_predictions.append(cf_chunk)
             all_cf_log_vars.append(outputs['log_var'][:, 1:, :])
             all_deltas.append(outputs['deltas'])
 
@@ -250,10 +251,17 @@ class ParallelUniverseTransformer(nn.Module):
         log_vars = torch.cat([baseline_log_var, torch.cat(all_cf_log_vars, dim=1)], dim=1)
         deltas = torch.cat(all_deltas, dim=1)
 
+        K = len(interventions)
+        ret_cf = predictions[:, 1:, :]
+        # Ensure we return exactly K counterfactuals (fixes chunking edge case when K > chunk_size)
+        if ret_cf.shape[1] != K:
+            ret_cf = ret_cf[:, :K, :]
+        ret_deltas = deltas[:, :K, :] if deltas.shape[1] != K else deltas
+
         return {
             'baseline': predictions[:, 0, :],
-            'counterfactuals': predictions[:, 1:, :],
-            'deltas': deltas,
+            'counterfactuals': ret_cf,
+            'deltas': ret_deltas,
             'log_var': log_vars,
             'uncertainty': torch.exp(0.5 * log_vars)  # Standard deviation
         }
