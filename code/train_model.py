@@ -47,6 +47,7 @@ def main():
     parser.add_argument('--weight-decay', type=float, default=0.01, help='Weight decay')
     parser.add_argument('--warmup-steps', type=int, default=1000, help='Warmup steps')
     parser.add_argument('--max-steps', type=int, default=100000, help='Maximum training steps')
+    parser.add_argument('--long-run-curriculum', action='store_true', help='Use longer curriculum stages (more steps on harder stages)')
     
     # Loss
     parser.add_argument('--lambda-delta', type=float, default=2.0, help='Delta loss weight (recommended 2-10 if delta plateaus; higher = more focus on effect estimation)')
@@ -108,6 +109,7 @@ def main():
         weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
         max_steps=args.max_steps,
+        long_run_curriculum=args.long_run_curriculum,
         lambda_delta=args.lambda_delta,
         lambda_delta_warmup_steps=args.lambda_delta_warmup_steps,
         use_mixed_precision=args.mixed_precision,
