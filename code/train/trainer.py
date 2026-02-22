@@ -489,7 +489,14 @@ class Trainer:
             else CurriculumConfig.get_default_curriculum()
         )
 
+        cumulative_steps = 0
         for stage in curriculum_stages:
+            cumulative_steps += stage.min_steps
+            
+            if self.global_step >= cumulative_steps:
+                # Stage already completed in a previous run
+                continue
+
             if self.global_step >= self.config.max_steps:
                 break
 
@@ -510,9 +517,8 @@ class Trainer:
                 pin_memory=self.config.pin_memory,
             )
 
-            # Train for this stage
-            stage_start_step = self.global_step
-            while self.global_step < stage_start_step + stage.min_steps:
+            # Train until stage completion or max steps
+            while self.global_step < cumulative_steps:
                 if self.global_step >= self.config.max_steps:
                     break
                 self.train_epoch(dataloader)
@@ -544,7 +550,8 @@ class Trainer:
             'scheduler_state_dict': self.scheduler.state_dict(),
             'global_step': self.global_step,
             'current_epoch': self.current_epoch,
-            'config': vars(self.config)
+            'config': vars(self.config),
+            'last_eval_metrics': getattr(self, '_last_eval_metrics', None)
         }
         
         if self.scaler is not None:
@@ -566,10 +573,16 @@ class Trainer:
         model_state = checkpoint['model_state_dict']
         target = self.model.module if self._is_ddp else self.model
         target.load_state_dict(model_state, strict=False)
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        try:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        except ValueError as e:
+            if self.rank == 0:
+                print(f"Warning: Could not load optimizer/scheduler state due to parameter mismatch (e.g., changed architecture properties like --use-quantiles). Details: {e}")
+                print("Proceeding with fresh optimizer and scheduler states...")
         self.global_step = checkpoint['global_step']
         self.current_epoch = checkpoint['current_epoch']
+        self._last_eval_metrics = checkpoint.get('last_eval_metrics', None)
         
         if self.scaler is not None and 'scaler_state_dict' in checkpoint:
             self.scaler.load_state_dict(checkpoint['scaler_state_dict'])

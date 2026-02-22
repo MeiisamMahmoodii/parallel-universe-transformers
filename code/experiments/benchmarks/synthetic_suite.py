@@ -38,7 +38,7 @@ class SyntheticBenchmark:
     def generate_test_scm(
         self,
         scm_type: str,
-        n_samples: int = 1000,
+        n_samples: int = 128,
         seed: int = 42
     ) -> tuple:
         """Generate test data from a specific SCM family.
@@ -99,7 +99,7 @@ class SyntheticBenchmark:
     def evaluate_scm(
         self,
         scm_type: str,
-        n_samples: int = 1000,
+        n_samples: int = 128,
         n_interventions: int = 5,
         seed: int = 42
     ) -> Dict:
@@ -168,7 +168,7 @@ class SyntheticBenchmark:
         
         # Predict
         results = self.model.predict_interventions(
-            support_df, query_df, api_interventions
+            support_df, query_df, api_interventions, support_y=support_y
         )
         
         # Compute metrics
@@ -235,7 +235,7 @@ class SyntheticBenchmark:
         self,
         k_list: List[int] = (5, 10, 15),
         scm_types: Optional[List[str]] = None,
-        n_samples: int = 1000,
+        n_samples: int = 128,
         seed: int = 42,
     ) -> Dict:
         """Run benchmark with multiple intervention counts K (counterfactual representation at scale).

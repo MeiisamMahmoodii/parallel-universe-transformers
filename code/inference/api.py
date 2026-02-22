@@ -208,6 +208,7 @@ class ParallelUniverseModel:
         data: pd.DataFrame,
         query: pd.DataFrame,
         interventions: List[Intervention],
+        support_y: Optional[np.ndarray] = None,
         feature_schema: Optional[dict] = None,
         chunk_size: int = 8
     ) -> InterventionResults:
@@ -231,7 +232,11 @@ class ParallelUniverseModel:
         
         # Convert to tensors
         support_x = torch.from_numpy(support_x).unsqueeze(0).to(self.device)  # [1, Ns, d]
-        support_y = torch.zeros(1, support_x.shape[1], device=self.device)  # Placeholder
+        if support_y is not None:
+            support_y_tensor = torch.from_numpy(support_y).float().unsqueeze(0).to(self.device)  # [1, Ns]
+        else:
+            support_y_tensor = torch.zeros(1, support_x.shape[1], device=self.device)  # Placeholder
+
         query_x_baseline = torch.from_numpy(query_x).unsqueeze(0).to(self.device)  # [1, Nq, d]
         feature_types = feature_types.to(self.device)
         cardinalities = cardinalities.to(self.device)
@@ -241,7 +246,7 @@ class ParallelUniverseModel:
         
         # Predict
         results = self.model.predict_interventions(
-            support_x, support_y, query_x_baseline,
+            support_x, support_y_tensor, query_x_baseline,
             scm_interventions,
             feature_types, cardinalities,
             chunk_size=chunk_size

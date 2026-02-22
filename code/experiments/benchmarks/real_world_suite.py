@@ -113,7 +113,7 @@ class RealWorldBenchmark:
         else:
             self.model = None
     
-    def evaluate_ihdp(self, seed: int = 42, scale_outcome_for_ours: bool = False) -> Dict:
+    def evaluate_ihdp(self, seed: int = 42, scale_outcome_for_ours: bool = True, max_support: Optional[int] = 100, max_query: Optional[int] = 28, n_ensembles: int = 5) -> Dict:
         """Evaluate on IHDP with given random seed for train/test split."""
         print("\nEvaluating on IHDP Dataset...")
         dataset = IHDPDataset()
@@ -176,12 +176,33 @@ class RealWorldBenchmark:
                 sy = to_tensor(support_y_scaled) if use_scaled else to_tensor(support_y)
                 
                 if name == 'Ours':
-                    with torch.no_grad():
-                        outputs = self.model.model(
-                            t_support_x, sy, t_query_x, 
-                            ft.unsqueeze(0), cards.unsqueeze(0)
-                        )
-                        preds = outputs['prediction'].squeeze(0).cpu().numpy()
+                    all_pred_cates = []
+                    for _ in range(n_ensembles):
+                        if max_support and t_support_x.shape[1] > max_support:
+                            idx = torch.randperm(t_support_x.shape[1])[:max_support]
+                            cur_support_x = t_support_x[:, idx, :]
+                            cur_sy = sy[:, idx]
+                        else:
+                            cur_support_x = t_support_x
+                            cur_sy = sy
+
+                        cur_pred_cates = []
+                        n_q = t_query_x.shape[2]
+                        chunk_size = max_query if max_query else n_q
+                        for i in range(0, n_q, chunk_size):
+                            cur_query_x = t_query_x[:, :, i:i+chunk_size, :]
+                            with torch.no_grad():
+                                outputs = self.model.model(
+                                    cur_support_x, cur_sy, cur_query_x, 
+                                    ft.unsqueeze(0), cards.unsqueeze(0)
+                                )
+                                chunk_cate = outputs['deltas'][0, 0].cpu().numpy()
+                                if use_scaled and scaler is not None:
+                                    chunk_cate = chunk_cate * scaler.scale_[0]
+                                cur_pred_cates.append(chunk_cate)
+                        all_pred_cates.append(np.concatenate(cur_pred_cates, axis=-1))
+                    
+                    pred_cate = np.mean(all_pred_cates, axis=0)
                 else:
                     # Baselines (TransTEE/Dragonnet) need grads for internal training
                     # So we DO NOT use torch.no_grad() here.
@@ -190,15 +211,10 @@ class RealWorldBenchmark:
                         ft.unsqueeze(0), cards.unsqueeze(0)
                     )
                     preds = outputs['prediction'].squeeze(0).cpu().numpy()
-                
-                # Preds: [2, Nq]
-                pred_y0 = preds[0]
-                pred_y1 = preds[1]
-                if use_scaled and scaler is not None:
-                    pred_y0 = scaler.inverse_transform(pred_y0.reshape(-1, 1)).flatten()
-                    pred_y1 = scaler.inverse_transform(pred_y1.reshape(-1, 1)).flatten()
-                pred_cate = pred_y1 - pred_y0
-                
+                    pred_y0 = preds[0]
+                    pred_y1 = preds[1]
+                    pred_cate = pred_y1 - pred_y0
+
                 pehe = np.sqrt(np.mean((pred_cate - true_cate_test) ** 2))
                 ate_error = np.abs(np.mean(pred_cate) - np.mean(true_cate_test))
                 
@@ -286,14 +302,15 @@ class RealWorldBenchmark:
                 if name == "Ours":
                     with torch.no_grad():
                         out = self.model.model(t_support_x, sy, t_query_x, ft, cards)
+                    pred_delta = out["deltas"][0, 0].cpu().numpy()
+                    if use_scaled and scaler:
+                        pred_delta = pred_delta * scaler.scale_[0]
+                    p = pred_delta * weights[i]
                 else:
                     out = model(t_support_x, sy, t_query_x, ft, cards)
-                preds = out["prediction"].squeeze(0).cpu().numpy()
-                pred_y0, pred_y1 = preds[0], preds[1]
-                if use_scaled and scaler:
-                    pred_y0 = scaler.inverse_transform(pred_y0.reshape(-1, 1)).flatten()
-                    pred_y1 = scaler.inverse_transform(pred_y1.reshape(-1, 1)).flatten()
-                p = (pred_y1 - pred_y0) * weights[i]
+                    preds = out["prediction"].squeeze(0).cpu().numpy()
+                    pred_y0, pred_y1 = preds[0], preds[1]
+                    p = (pred_y1 - pred_y0) * weights[i]
                 pred_cate_sum = p if pred_cate_sum is None else pred_cate_sum + p
             except Exception:
                 return None
@@ -329,16 +346,15 @@ class RealWorldBenchmark:
                             t_support_x, t_support_y, t_query_x,
                             ft.unsqueeze(0), cards.unsqueeze(0)
                         )
-                        preds = outputs['prediction'].squeeze(0).cpu().numpy()
+                        pred_cate = outputs['deltas'][0, 0].cpu().numpy()
                 else:
                     outputs = model(
                         t_support_x, t_support_y, t_query_x,
                         ft.unsqueeze(0), cards.unsqueeze(0)
                     )
                     preds = outputs['prediction'].squeeze(0).cpu().numpy()
-
-                pred_y0, pred_y1 = preds[0], preds[1]
-                pred_cate = pred_y1 - pred_y0
+                    pred_y0, pred_y1 = preds[0], preds[1]
+                    pred_cate = pred_y1 - pred_y0
                 pehe = np.sqrt(np.mean((pred_cate - true_cate_test) ** 2))
                 ate_error = np.abs(np.mean(pred_cate) - np.mean(true_cate_test))
                 results[name] = {'PEHE': float(pehe), 'ATE_Err': float(ate_error)}
@@ -403,16 +419,15 @@ class RealWorldBenchmark:
                             t_support_x, t_support_y, t_query_x,
                             ft.unsqueeze(0), cards.unsqueeze(0)
                         )
-                        preds = outputs['prediction'].squeeze(0).cpu().numpy()
+                        pred_cate = outputs['deltas'][0, 0].cpu().numpy()
                 else:
                     outputs = model(
                         t_support_x, t_support_y, t_query_x,
                         ft.unsqueeze(0), cards.unsqueeze(0)
                     )
                     preds = outputs['prediction'].squeeze(0).cpu().numpy()
-
-                pred_y0, pred_y1 = preds[0], preds[1]
-                pred_cate = pred_y1 - pred_y0
+                    pred_y0, pred_y1 = preds[0], preds[1]
+                    pred_cate = pred_y1 - pred_y0
                 pehe = np.sqrt(np.mean((pred_cate - true_cate_test) ** 2)) if has_potential else float('nan')
                 ate_error = np.abs(np.mean(pred_cate) - np.mean(true_cate_test))
                 results[name] = {
